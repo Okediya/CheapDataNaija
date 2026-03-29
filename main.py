@@ -175,7 +175,10 @@ async def on_shutdown(app: web.Application):
     if task:
         task.cancel()
 
-    await bot.delete_webhook()
+    # Do NOT delete the webhook here! If Render spins down, deleting the webhook
+    # means Telegram won't be able to wake the server up when a new message arrives.
+    # await bot.delete_webhook()
+    
     await bot.session.close()
     logger.info("Bot shut down cleanly.")
 

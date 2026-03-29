@@ -253,7 +253,11 @@ def _get_history(telegram_id: int) -> list:
 def _trim_history(telegram_id: int):
     history = _conversations.get(telegram_id, [])
     if len(history) > MAX_HISTORY * 2:
-        _conversations[telegram_id] = history[-(MAX_HISTORY * 2):]
+        trim_index = len(history) - (MAX_HISTORY * 2)
+        # Ensure we always start with a user message to prevent API errors
+        while trim_index < len(history) and getattr(history[trim_index], "role", "") != "user":
+            trim_index += 1
+        _conversations[telegram_id] = history[trim_index:]
 
 
 # ─── Main Processing ─────────────────────────────────────────────────────────
