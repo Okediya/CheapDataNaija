@@ -100,6 +100,31 @@ async def handle_paystack_webhook(request: web.Request) -> web.Response:
         return web.Response(status=500, text="Error")
 
 
+# ─── SMEDATA Webhook Handler ──────────────────────────────────────────────────
+
+async def handle_smedata_webhook(request: web.Request) -> web.Response:
+    """Process incoming SMEDATA webhook events."""
+    try:
+        if request.method == "POST":
+            try:
+                data = await request.json()
+            except Exception:
+                data = await request.post()
+        else:
+            data = request.query
+
+        logger.info(f"SMEDATA Webhook received: {dict(data)}")
+
+        # TODO: Implement refund logic based on data['status'] and data['ref']
+        # once the exact webhook structure is confirmed in logs.
+
+        return web.Response(status=200, text="OK")
+
+    except Exception as e:
+        logger.error(f"SMEDATA webhook error: {e}", exc_info=True)
+        return web.Response(status=500, text="Error")
+
+
 # ─── Health Check ─────────────────────────────────────────────────────────────
 
 async def handle_health(request: web.Request) -> web.Response:
@@ -164,6 +189,11 @@ def create_app() -> web.Application:
     # Routes
     app.router.add_post(WEBHOOK_PATH, handle_telegram_webhook)
     app.router.add_post("/webhook/paystack", handle_paystack_webhook)
+    
+    # SMEDATA might send POST or GET, so we bind both
+    app.router.add_post("/webhook/smedata", handle_smedata_webhook)
+    app.router.add_get("/webhook/smedata", handle_smedata_webhook)
+
     app.router.add_get("/", handle_health)
     app.router.add_get("/health", handle_health)
 
