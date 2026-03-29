@@ -158,7 +158,7 @@ async def execute_tool(function_name: str, args: dict, telegram_id: int) -> str:
     try:
         if function_name == "get_data_prices":
             network = args.get("network", None)
-            prices = smedata_service.get_prices(network)
+            prices = await smedata_service.get_prices(network)
             return json.dumps(prices, indent=2)
 
         elif function_name == "check_wallet_balance":
@@ -171,7 +171,7 @@ async def execute_tool(function_name: str, args: dict, telegram_id: int) -> str:
             phone = args.get("phone", "")
 
             # Get price
-            price = smedata_service.get_price(network, size)
+            price = await smedata_service.get_price(network, size)
             if price is None:
                 return json.dumps({"success": False, "message": f"No {size} plan available for {network}."})
 

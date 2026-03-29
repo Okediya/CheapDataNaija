@@ -10,6 +10,7 @@ load_dotenv()
 
 # Telegram
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+ADMIN_TELEGRAM_ID = os.getenv("ADMIN_TELEGRAM_ID", "")
 
 # Groq Llama 3.3
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")

@@ -59,10 +59,40 @@ async def init_db() -> None:
                 FOREIGN KEY (user_id) REFERENCES users(telegram_id)
             );
 
+            CREATE TABLE IF NOT EXISTS data_plans (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                network TEXT NOT NULL,
+                network_id TEXT NOT NULL,
+                size TEXT NOT NULL,
+                plan_id TEXT NOT NULL,
+                price REAL NOT NULL,
+                UNIQUE(network, size)
+            );
+
             CREATE INDEX IF NOT EXISTS idx_orders_user ON orders(user_id);
             CREATE INDEX IF NOT EXISTS idx_transactions_user ON transactions(user_id);
         """)
         await db.commit()
+
+        # Bootstrap current hard-coded plans ONLY if table is empty
+        cursor = await db.execute("SELECT COUNT(*) FROM data_plans")
+        count = (await cursor.fetchone())[0]
+        if count == 0:
+            logger.info("Bootstrapping data_plans table with default prices...")
+            default_plans = [
+                ("MTN", "1", "1GB", "1", 280), ("MTN", "1", "2GB", "2", 550),
+                ("MTN", "1", "3GB", "3", 800), ("MTN", "1", "5GB", "5", 1300), ("MTN", "1", "10GB", "10", 2500),
+                ("AIRTEL", "2", "1GB", "1", 270), ("AIRTEL", "2", "2GB", "2", 530),
+                ("AIRTEL", "2", "3GB", "3", 780), ("AIRTEL", "2", "5GB", "5", 1250),
+                ("GLO", "3", "1GB", "1", 260), ("GLO", "3", "2GB", "2", 510),
+                ("GLO", "3", "3GB", "3", 760), ("GLO", "3", "5GB", "5", 1200),
+            ]
+            await db.executemany(
+                "INSERT INTO data_plans (network, network_id, size, plan_id, price) VALUES (?, ?, ?, ?, ?)",
+                default_plans
+            )
+            await db.commit()
+
         logger.info("Database initialized successfully.")
     finally:
         await db.close()
@@ -234,3 +264,68 @@ async def get_transactions(telegram_id: int, limit: int = 10) -> List[Dict[str, 
         return [dict(r) for r in rows]
     finally:
         await db.close()
+
+# ─── Data Plans Management ───────────────────────────────────────────────────
+
+async def get_all_plans() -> List[Dict[str, Any]]:
+    """Get all available data plans from the database."""
+    db = await _get_db()
+    try:
+        cursor = await db.execute("SELECT * FROM data_plans ORDER BY network ASC, price ASC")
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        await db.close()
+
+
+async def get_plan(network: str, size: str) -> Optional[Dict[str, Any]]:
+    """Get a specific data plan by network and size."""
+    db = await _get_db()
+    network = network.upper().strip()
+    size = size.upper().strip().replace(" ", "")
+    try:
+        cursor = await db.execute(
+            "SELECT * FROM data_plans WHERE network = ? AND size = ?",
+            (network, size)
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+    finally:
+        await db.close()
+
+
+async def add_or_update_plan(network: str, network_id: str, size: str, plan_id: str, price: float) -> None:
+    """Add a new data plan or completely update an existing one."""
+    network = network.upper().strip()
+    size = size.upper().strip().replace(" ", "")
+    db = await _get_db()
+    try:
+        await db.execute(
+            """INSERT INTO data_plans (network, network_id, size, plan_id, price)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(network, size) DO UPDATE SET
+               network_id=excluded.network_id,
+               plan_id=excluded.plan_id,
+               price=excluded.price""",
+            (network, network_id, size, plan_id, price)
+        )
+        await db.commit()
+    finally:
+        await db.close()
+
+
+async def delete_plan(network: str, size: str) -> bool:
+    """Delete a plan by network and size. Returns True if deleted, False if not found."""
+    network = network.upper().strip()
+    size = size.upper().strip().replace(" ", "")
+    db = await _get_db()
+    try:
+        cursor = await db.execute(
+            "DELETE FROM data_plans WHERE network = ? AND size = ?",
+            (network, size)
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+    finally:
+        await db.close()
+

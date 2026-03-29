@@ -8,9 +8,14 @@ from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command, CommandStart
 from services.llm_service import process_message
-from database import get_or_create_user
+from database import get_or_create_user, get_all_plans, add_or_update_plan, delete_plan
+from config import ADMIN_TELEGRAM_ID
 
 logger = logging.getLogger(__name__)
+
+def is_admin(user_id: int) -> bool:
+    """Check if the user is authorized as an admin."""
+    return str(user_id).strip() == str(ADMIN_TELEGRAM_ID).strip()
 
 router = Router()
 
@@ -135,6 +140,82 @@ async def cmd_help(message: Message):
     )
     await message.answer(help_text, parse_mode="Markdown")
 
+
+# ─── Admin Command Handlers ──────────────────────────────────────────────────
+
+@router.message(Command("myid"))
+async def cmd_myid(message: Message):
+    """Temporary command to get user ID for setting up config."""
+    await message.answer(f"Your Telegram User ID is: `{message.from_user.id}`", parse_mode="Markdown")
+
+
+@router.message(Command("listplans"))
+async def cmd_listplans(message: Message):
+    """List all available data plans."""
+    if not is_admin(message.from_user.id):
+        return
+        
+    plans = await get_all_plans()
+    if not plans:
+        await message.answer("No data plans found in the database. Use /addplan to add some.")
+        return
+        
+    response = "📋 **Live Data Plans Catalog**\n\n"
+    for p in plans:
+        response += f"• **{p['network']} {p['size']}** (NID:{p['network_id']}, PID:{p['plan_id']}): ₦{p['price']:,.2f}\n"
+        
+    await message.answer(response, parse_mode="Markdown")
+
+
+@router.message(Command("addplan"))
+async def cmd_addplan(message: Message):
+    """Add or update a data plan."""
+    if not is_admin(message.from_user.id):
+        return
+        
+    parts = message.text.split()[1:]
+    if len(parts) != 5:
+        await message.answer(
+            "⚠️ **Format Error**\n"
+            "Usage: `/addplan <Network> <NetworkID> <Size> <PlanID> <Price>`\n"
+            "Example: `/addplan MTN 1 20GB 11 4900`",
+            parse_mode="Markdown"
+        )
+        return
+        
+    network, network_id, size, plan_id, price_str = parts
+    try:
+        price = float(price_str)
+        await add_or_update_plan(network, network_id, size, plan_id, price)
+        await message.answer(f"✅ Successfully added/updated the **{network.upper()} {size.upper()}** plan for ₦{price:,.2f}.", parse_mode="Markdown")
+    except ValueError:
+        await message.answer("⚠️ Ensure the price is a valid number.")
+    except Exception as e:
+        await message.answer(f"❌ Error saving plan: {str(e)}")
+
+
+@router.message(Command("delplan"))
+async def cmd_delplan(message: Message):
+    """Delete a data plan."""
+    if not is_admin(message.from_user.id):
+        return
+        
+    parts = message.text.split()[1:]
+    if len(parts) != 2:
+        await message.answer(
+            "⚠️ **Format Error**\n"
+            "Usage: `/delplan <Network> <Size>`\n"
+            "Example: `/delplan MTN 20GB`",
+            parse_mode="Markdown"
+        )
+        return
+        
+    network, size = parts
+    deleted = await delete_plan(network, size)
+    if deleted:
+        await message.answer(f"🗑️ Successfully deleted the **{network.upper()} {size.upper()}** plan.", parse_mode="Markdown")
+    else:
+        await message.answer(f"⚠️ Plan **{network.upper()} {size.upper()}** not found.")
 
 # ─── Callback Query Handlers (Menu Buttons) ──────────────────────────────────
 
