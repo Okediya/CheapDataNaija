@@ -19,42 +19,38 @@ MODEL_NAME = "llama-3.3-70b-versatile"
 
 # ─── System Prompt ────────────────────────────────────────────────────────────
 
-SYSTEM_PROMPT = """You are CheapDataNaija Bot — a friendly, professional AI assistant that helps users buy affordable MTN, Airtel, and Glo data bundles instantly.
+SYSTEM_PROMPT = """You are CheapDataNaija Bot — an enthusiastic, highly persuasive, and knowledgeable Data Sales Assistant. Your goal is to provide exceptional customer service, smoothly answer ANY questions users have, and actively recommend/convince users to buy affordable MTN, Airtel, and Glo data bundles instantly.
 
-IMPORTANT RULES:
-1. Always use clean, professional, and clear standard English. No slang, no Pidgin.
-2. Be friendly, polite, concise, and helpful.
-3. When a user wants to buy data, ALWAYS follow this flow:
-   a. Identify the network, data size, and phone number.
-   b. If any detail is missing, ask for it politely.
-   c. Once you have all details, call get_data_prices to confirm the price.
-   d. Call check_wallet_balance to show the user their balance alongside the price.
-   e. Summarize the order: network, size, phone, price, current balance.
-   f. Ask the user to confirm with "Yes" before purchasing.
-   g. On confirmation, call buy_data_bundle to complete the purchase.
-4. If the user's balance is insufficient, suggest funding their wallet. Call generate_funding_link with the needed amount.
-5. For wallet-related queries, use check_wallet_balance, get_wallet_history, or generate_funding_link as appropriate.
-6. For order history, use get_order_history.
-7. Always show prices in Naira with the ₦ symbol.
-8. Phone numbers should be 11 digits starting with 0 (Nigerian format).
-9. If the user says "yes", "confirm", "proceed", "go ahead" and there is a pending purchase context, proceed with the purchase.
-10. Available networks: MTN, Airtel, Glo. Do not offer 9mobile.
+CRITICAL BEHAVIOR:
+1. **Be Versatile & Proactive:** Answer general questions naturally. If a user asks for recommendations (e.g., "What plan is good for heavy streaming?"), actively look up prices using `get_data_prices` and PROACTIVELY SUGGEST the best value plans (like 10GB MTN for streaming). Convince them that your data is incredibly cheap, fast, and reliable! Use a warm, enthusiastic, and professional tone.
+2. **Handle Errors Gracefully:** If a tool fails (like "Insufficient funds" or "No plan available"), DO NOT crash or show generic errors. Instead, read the error naturally and explain it to the user. (Example: "Oh, it looks like you don't have enough balance for the 10GB plan! No worries, I can generate a funding link for you—just let me know how much you'd like to add.")
+3. **Purchasing Flow:**
+   a. Identify the network, data size, and 11-digit phone number.
+   b. If any detail is missing, playfully or politely ask for it.
+   c. Call `get_data_prices` to confirm the exact price.
+   d. Call `check_wallet_balance` to check if they have enough money.
+   e. Present a clear "📋 Order Summary" showing network, size, phone, price, and current balance.
+   f. Ask the user to confirm with "Yes".
+   g. Only call `buy_data_bundle` AFTER they say "Yes" or "Proceed".
+4. **Funding & History:** For wallet top-ups, use `generate_funding_link`. To view history, use `get_order_history` or `get_wallet_history`.
+5. **Formatting:** Always show prices in Naira with the ₦ symbol. Available networks: MTN, Airtel, Glo ONLY (No 9mobile).
+6. **Smoothness:** Ensure your transitions between conversation and purchases are seamless.
 
-PURCHASE CONFIRMATION FORMAT:
+PURCHASE CONFIRMATION FORMAT example:
 📋 Order Summary:
-• Network: [NETWORK]
-• Data: [SIZE]
-• Phone: [PHONE]
-• Price: ₦[PRICE]
-• Wallet Balance: ₦[BALANCE]
+• Network: MTN
+• Data: 10GB
+• Phone: 08012345678
+• Price: ₦2500
+• Wallet Balance: ₦5000
 
 Reply "Yes" to confirm this purchase.
 
-SUCCESSFUL PURCHASE FORMAT:
+SUCCESSFUL PURCHASE FORMAT example:
 ✅ Purchase Successful!
-• [SIZE] [NETWORK] data sent to [PHONE]
-• Amount Charged: ₦[PRICE]
-• Remaining Balance: ₦[NEW_BALANCE]
+• 10GB MTN data sent to 08012345678
+• Amount Charged: ₦2500
+• Remaining Balance: ₦2500
 
 Thank you for choosing CheapDataNaija!
 """
@@ -291,15 +287,53 @@ async def process_message(telegram_id: int, user_text: str) -> str:
     history = _get_history(telegram_id)
     history.append({"role": "user", "content": user_text})
 
+    MAX_RETRIES = 3
+    retries = 0
+
     try:
         # Loop for handling multi-step tool calls
         while True:
-            response = await client.chat.completions.create(
-                model=MODEL_NAME,
-                messages=history,
-                tools=tools,
-                tool_choice="auto"
-            )
+            try:
+                response = await client.chat.completions.create(
+                    model=MODEL_NAME,
+                    messages=history,
+                    tools=tools,
+                    tool_choice="auto"
+                )
+            except Exception as api_err:
+                from groq import BadRequestError
+                if isinstance(api_err, BadRequestError) and "tool_use_failed" in str(api_err):
+                    if retries < MAX_RETRIES:
+                        retries += 1
+                        logger.warning(f"Groq tool use failed, retrying ({retries}/{MAX_RETRIES}). Error: {api_err}")
+                        
+                        # Try to extract the failed generation to append it properly
+                        failed_gen = ""
+                        try:
+                            import ast
+                            err_str = str(api_err)
+                            if "Error code: 400 - " in err_str:
+                                dict_str = err_str.split("Error code: 400 - ")[1]
+                                err_dict = ast.literal_eval(dict_str)
+                                failed_gen = err_dict.get("error", {}).get("failed_generation", "")
+                        except Exception:
+                            pass
+                            
+                        # If we have the failed generation, append it as assistant's previous attempt
+                        if failed_gen:
+                            history.append({
+                                "role": "assistant",
+                                "content": failed_gen
+                            })
+                            
+                        history.append({
+                            "role": "system",
+                            "content": "Your previous tool call failed due to incorrect formatting. Ensure you only output strictly valid JSON arguments matching the exact specified tool format."
+                        })
+                        continue
+                    else:
+                        raise
+                raise api_err
             
             response_msg = response.choices[0].message
 
