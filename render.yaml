@@ -1,0 +1,28 @@
+services:
+  - type: web
+    name: cheapdatanaija-bot
+    runtime: docker
+    plan: free
+    region: frankfurt
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: GOOGLE_API_KEY
+        sync: false
+      - key: PAYSTACK_SECRET_KEY
+        sync: false
+      - key: PAYSTACK_PUBLIC_KEY
+        sync: false
+      - key: SMEDATA_TOKEN
+        sync: false
+      - key: WEBHOOK_HOST
+        sync: false
+      - key: WEBHOOK_PATH
+        value: /webhook/bot
+      - key: DATABASE_PATH
+        value: /app/data/cheapdatanaija.db
+    healthCheckPath: /health
+    disk:
+      name: bot-data
+      mountPath: /app/data
+      sizeGB: 1
