@@ -350,7 +350,10 @@ async def process_message(telegram_id: int, user_text: str) -> str:
                 for tool_call in response_msg.tool_calls:
                     fn_name = tool_call.function.name
                     try:
-                        fn_args = json.loads(tool_call.function.arguments)
+                        args_str = tool_call.function.arguments or "{}"
+                        fn_args = json.loads(args_str)
+                        if fn_args is None:
+                            fn_args = {}
                     except json.JSONDecodeError:
                         fn_args = {}
                         

@@ -1,0 +1,54 @@
+﻿venv\Scripts\python : 
+Tool execution error 
+(get_data_prices): 
+'NoneType' object has no 
+attribute 'get'
+At line:1 char:1
++ venv\Scripts\python -c 
+"import sys; sys.stdout.re
+configure(encoding=' ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo        
+      : NotSpecified: (T  
+  ool execution ...attr   
+ ibute 'get':String) [    
+], RemoteException
+    + FullyQualifiedError 
+   Id : NativeCommandErr  
+  or
+ 
+Traceback (most recent 
+call last):
+  File "C:\Users\Ayobami\D
+esktop\cheapdatanaija\serv
+ices\llm_service.py", 
+line 160, in execute_tool
+    network = 
+args.get("network", None)
+AttributeError: 
+'NoneType' object has no 
+attribute 'get'
+Tool execution error 
+(get_data_prices): 
+'NoneType' object has no 
+attribute 'get'
+Traceback (most recent 
+call last):
+  File "C:\Users\Ayobami\D
+esktop\cheapdatanaija\serv
+ices\llm_service.py", 
+line 160, in execute_tool
+    network = 
+args.get("network", None)
+AttributeError: 
+'NoneType' object has no 
+attribute 'get'
+I'm happy to help you find a data bundle that fits your budget of Γéª300. Let me check what options are available.
+
+It seems I'm having a bit of trouble getting the prices right now. But don't worry, I can suggest some popular data bundles that might be within your budget. 
+
+For example, MTN, Airtel, and Glo often have daily or weekly plans that could work for you. If you're looking for something specific like a daily plan for light browsing or a weekly plan for heavier use, I can try to find the best fit.
+
+If you'd like, I can also generate a funding link for you to add more money to your wallet, which could open up more data bundle options. Just let me know how I can assist you further!
