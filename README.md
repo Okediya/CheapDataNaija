@@ -32,7 +32,7 @@ cheapdatanaija/
 │   └── handlers.py       # Telegram command & message handlers
 └── services/
     ├── __init__.py
-    ├── gemini_service.py  # Gemini AI with tool-calling
+    ├── llm_service.py     # Groq API with tool-calling
     ├── wallet_service.py  # Wallet operations
     ├── smedata_service.py # VTU data purchase
     └── paystack_service.py # Payment processing

@@ -1,20 +1,21 @@
 """
-CheapDataNaija Bot — Gemini AI Service
+CheapDataNaija Bot — LLM Service (Groq API)
 Conversational AI engine with tool-calling for data purchases, wallet management, etc.
-Uses Google Gemini 2.5 Flash model.
+Uses Groq's Llama 3.3.
 """
 
 import json
 import logging
-import google.generativeai as genai
-from config import GOOGLE_API_KEY
+from groq import AsyncGroq
+from config import GROQ_API_KEY
 from services import wallet_service, smedata_service, paystack_service
 from database import get_orders, get_or_create_user
 
 logger = logging.getLogger(__name__)
 
-# Configure Gemini
-genai.configure(api_key=GOOGLE_API_KEY)
+# Configure Groq client
+client = AsyncGroq(api_key=GROQ_API_KEY)
+MODEL_NAME = "llama-3.3-70b-versatile"
 
 # ─── System Prompt ────────────────────────────────────────────────────────────
 
@@ -58,86 +59,100 @@ SUCCESSFUL PURCHASE FORMAT:
 Thank you for choosing CheapDataNaija!
 """
 
-# ─── Tool Declarations ───────────────────────────────────────────────────────
+# ─── Tool Declarations (Groq / OpenAI Format) ────────────────────────────────
 
 tools = [
-    genai.protos.Tool(
-        function_declarations=[
-            genai.protos.FunctionDeclaration(
-                name="get_data_prices",
-                description="Get available data bundle prices. Optionally filter by network name (MTN, AIRTEL, GLO). Returns all prices if no network specified.",
-                parameters=genai.protos.Schema(
-                    type=genai.protos.Type.OBJECT,
-                    properties={
-                        "network": genai.protos.Schema(
-                            type=genai.protos.Type.STRING,
-                            description="Network name to filter by: MTN, AIRTEL, or GLO. Leave empty for all networks."
-                        )
+    {
+        "type": "function",
+        "function": {
+            "name": "get_data_prices",
+            "description": "Get available data bundle prices. Optionally filter by network name (MTN, AIRTEL, GLO). Returns all prices if no network specified.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "network": {
+                        "type": "string",
+                        "description": "Network name to filter by: MTN, AIRTEL, or GLO. Leave empty for all networks."
                     }
-                )
-            ),
-            genai.protos.FunctionDeclaration(
-                name="check_wallet_balance",
-                description="Check the user's current wallet balance in Naira.",
-                parameters=genai.protos.Schema(
-                    type=genai.protos.Type.OBJECT,
-                    properties={}
-                )
-            ),
-            genai.protos.FunctionDeclaration(
-                name="buy_data_bundle",
-                description="Purchase a data bundle for a phone number. Deducts from wallet and calls the VTU provider. Only call this after the user has explicitly confirmed the purchase.",
-                parameters=genai.protos.Schema(
-                    type=genai.protos.Type.OBJECT,
-                    properties={
-                        "network": genai.protos.Schema(
-                            type=genai.protos.Type.STRING,
-                            description="Network name: MTN, AIRTEL, or GLO"
-                        ),
-                        "size": genai.protos.Schema(
-                            type=genai.protos.Type.STRING,
-                            description="Data size: 1GB, 2GB, 3GB, 5GB, or 10GB"
-                        ),
-                        "phone": genai.protos.Schema(
-                            type=genai.protos.Type.STRING,
-                            description="Recipient phone number (11 digits, starting with 0)"
-                        )
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "check_wallet_balance",
+            "description": "Check the user's current wallet balance in Naira.",
+            "parameters": {
+                "type": "object",
+                "properties": {}
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "buy_data_bundle",
+            "description": "Purchase a data bundle for a phone number. Deducts from wallet and calls the VTU provider. Only call this after the user has explicitly confirmed the purchase.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "network": {
+                        "type": "string",
+                        "description": "Network name: MTN, AIRTEL, or GLO"
                     },
-                    required=["network", "size", "phone"]
-                )
-            ),
-            genai.protos.FunctionDeclaration(
-                name="generate_funding_link",
-                description="Generate a Paystack payment link for the user to fund their wallet.",
-                parameters=genai.protos.Schema(
-                    type=genai.protos.Type.OBJECT,
-                    properties={
-                        "amount": genai.protos.Schema(
-                            type=genai.protos.Type.NUMBER,
-                            description="Amount in Naira to fund the wallet with"
-                        )
+                    "size": {
+                        "type": "string",
+                        "description": "Data size: 1GB, 2GB, 3GB, 5GB, or 10GB"
                     },
-                    required=["amount"]
-                )
-            ),
-            genai.protos.FunctionDeclaration(
-                name="get_order_history",
-                description="Get the user's recent data purchase history.",
-                parameters=genai.protos.Schema(
-                    type=genai.protos.Type.OBJECT,
-                    properties={}
-                )
-            ),
-            genai.protos.FunctionDeclaration(
-                name="get_wallet_history",
-                description="Get the user's recent wallet transaction history (credits and debits).",
-                parameters=genai.protos.Schema(
-                    type=genai.protos.Type.OBJECT,
-                    properties={}
-                )
-            ),
-        ]
-    )
+                    "phone": {
+                        "type": "string",
+                        "description": "Recipient phone number (11 digits, starting with 0)"
+                    }
+                },
+                "required": ["network", "size", "phone"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "generate_funding_link",
+            "description": "Generate a Paystack payment link for the user to fund their wallet.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "amount": {
+                        "type": "number",
+                        "description": "Amount in Naira to fund the wallet with"
+                    }
+                },
+                "required": ["amount"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_order_history",
+            "description": "Get the user's recent data purchase history.",
+            "parameters": {
+                "type": "object",
+                "properties": {}
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_wallet_history",
+            "description": "Get the user's recent wallet transaction history (credits and debits).",
+            "parameters": {
+                "type": "object",
+                "properties": {}
+            }
+        }
+    }
 ]
 
 # ─── Tool Execution ──────────────────────────────────────────────────────────
@@ -155,9 +170,9 @@ async def execute_tool(function_name: str, args: dict, telegram_id: int) -> str:
             return json.dumps({"balance": balance, "formatted": f"₦{balance:,.2f}"})
 
         elif function_name == "buy_data_bundle":
-            network = args["network"].upper()
-            size = args["size"].upper()
-            phone = args["phone"]
+            network = args.get("network", "").upper()
+            size = args.get("size", "").upper()
+            phone = args.get("phone", "")
 
             # Get price
             price = smedata_service.get_price(network, size)
@@ -202,7 +217,7 @@ async def execute_tool(function_name: str, args: dict, telegram_id: int) -> str:
                 })
 
         elif function_name == "generate_funding_link":
-            amount = float(args["amount"])
+            amount = float(args.get("amount", 0))
             email = f"{telegram_id}@cheapdatanaija.bot"
             result = await paystack_service.initialize_transaction(
                 email=email, amount_naira=amount, telegram_id=telegram_id
@@ -243,34 +258,25 @@ async def execute_tool(function_name: str, args: dict, telegram_id: int) -> str:
 _conversations: dict[int, list] = {}
 MAX_HISTORY = 20
 
-
 def _get_history(telegram_id: int) -> list:
     if telegram_id not in _conversations:
-        _conversations[telegram_id] = []
+        _conversations[telegram_id] = [{"role": "system", "content": SYSTEM_PROMPT}]
     return _conversations[telegram_id]
-
 
 def _trim_history(telegram_id: int):
     history = _conversations.get(telegram_id, [])
-    if len(history) > MAX_HISTORY * 2:
+    if len(history) > MAX_HISTORY * 2 + 1:
         trim_index = len(history) - (MAX_HISTORY * 2)
         # Ensure we always start with a user message to prevent API errors
-        while trim_index < len(history) and getattr(history[trim_index], "role", "") != "user":
+        while trim_index < len(history) and history[trim_index].get("role") != "user":
             trim_index += 1
-        _conversations[telegram_id] = history[trim_index:]
+        _conversations[telegram_id] = [history[0]] + history[trim_index:]
 
 
 # ─── Main Processing ─────────────────────────────────────────────────────────
 
-model = genai.GenerativeModel(
-    model_name="gemini-2.5-flash",
-    tools=tools,
-    system_instruction=SYSTEM_PROMPT,
-)
-
-
 async def process_message(telegram_id: int, user_text: str) -> str:
-    """Process a user message through Gemini with tool-calling support.
+    """Process a user message through Groq with tool-calling support.
     
     Args:
         telegram_id: Telegram user ID.
@@ -283,60 +289,68 @@ async def process_message(telegram_id: int, user_text: str) -> str:
     await get_or_create_user(telegram_id)
 
     history = _get_history(telegram_id)
-
-    # Start or continue chat
-    chat = model.start_chat(history=history)
+    history.append({"role": "user", "content": user_text})
 
     try:
-        response = await chat.send_message_async(user_text)
+        # Loop for handling multi-step tool calls
+        while True:
+            response = await client.chat.completions.create(
+                model=MODEL_NAME,
+                messages=history,
+                tools=tools,
+                tool_choice="auto"
+            )
+            
+            response_msg = response.choices[0].message
 
-        # Handle tool calls in a loop
-        while response.candidates[0].content.parts:
-            has_function_call = False
-            for part in response.candidates[0].content.parts:
-                if part.function_call:
-                    has_function_call = True
-                    fc = part.function_call
-                    fn_name = fc.name
-                    fn_args = dict(fc.args) if fc.args else {}
-
-                    logger.info(f"Gemini tool call: {fn_name}({fn_args}) for user {telegram_id}")
+            # Handle case where both text and tool calls might be present
+            if getattr(response_msg, "tool_calls", None):
+                # We append the assistant's request so Groq remembers its own tool calls
+                history.append({
+                    "role": "assistant",
+                    "content": response_msg.content,
+                    "tool_calls": [tool_call.model_dump() for tool_call in response_msg.tool_calls]
+                })
+                
+                # Execute all tools in parallel (or sequential)
+                for tool_call in response_msg.tool_calls:
+                    fn_name = tool_call.function.name
+                    try:
+                        fn_args = json.loads(tool_call.function.arguments)
+                    except json.JSONDecodeError:
+                        fn_args = {}
+                        
+                    logger.info(f"Groq tool call: {fn_name}({fn_args}) for user {telegram_id}")
 
                     # Execute the tool
                     result_str = await execute_tool(fn_name, fn_args, telegram_id)
+                    
+                    # Provide result back to LLM
+                    history.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "name": tool_call.function.name,
+                        "content": result_str
+                    })
+                
+                # After appending all tool results, loop around to send the history again
+                continue
 
-                    # Send tool result back to Gemini
-                    response = await chat.send_message_async(
-                        genai.protos.Content(
-                            parts=[
-                                genai.protos.Part(
-                                    function_response=genai.protos.FunctionResponse(
-                                        name=fn_name,
-                                        response={"result": json.loads(result_str)}
-                                    )
-                                )
-                            ]
-                        )
-                    )
-                    break  # Process one tool call at a time
-
-            if not has_function_call:
+            else:
+                # No tool calls; standard text response
+                reply_text = response_msg.content or ""
+                history.append({"role": "assistant", "content": reply_text})
                 break
 
-        # Extract text response
-        reply = ""
-        for part in response.candidates[0].content.parts:
-            if part.text:
-                reply += part.text
-
-        # Update conversation history
-        _conversations[telegram_id] = list(chat.history)
         _trim_history(telegram_id)
 
-        return reply.strip() if reply.strip() else "I'm sorry, I could not process that request. Please try again."
+        return reply_text.strip() if reply_text.strip() else "I'm sorry, I could not process that request. Please try again."
 
     except Exception as e:
-        logger.error(f"Gemini processing error for user {telegram_id}: {e}", exc_info=True)
+        # If an error occurs, pop the user message to prevent getting stuck
+        if history and history[-1].get("role") == "user":
+            history.pop()
+        logger.error(f"Groq processing error for user {telegram_id}: {e}", exc_info=True)
         return (
             "I apologize, but I encountered an error processing your request. "
             "Please try again or use /menu for quick options."

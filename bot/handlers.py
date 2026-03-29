@@ -7,7 +7,7 @@ import logging
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command, CommandStart
-from services.gemini_service import process_message
+from services.llm_service import process_message
 from database import get_or_create_user
 
 logger = logging.getLogger(__name__)

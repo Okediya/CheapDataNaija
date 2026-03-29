@@ -11,8 +11,8 @@ load_dotenv()
 # Telegram
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 
-# Google Gemini
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
+# Groq Llama 3.3
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 
 # Paystack
 PAYSTACK_SECRET_KEY = os.getenv("PAYSTACK_SECRET_KEY", "")
