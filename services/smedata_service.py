@@ -76,7 +76,7 @@ async def buy_data(network: str, size: str, phone: str) -> dict:
     url = f"{SMEDATA_BASE_URL}data"
     params = {
         "token": SMEDATA_TOKEN,
-        "network": network_id,
+        "network": network.lower(),
         "phone": phone,
         "size": plan_id,
     }
