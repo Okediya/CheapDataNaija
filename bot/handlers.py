@@ -211,9 +211,11 @@ async def cmd_syncsetup(message: Message):
         ("MTN", "1", "3GB-SME", "3gb", 1800),
         ("MTN", "1", "5GB-SME", "5gb", 3000),
         # MTN Direct Data
+        ("MTN", "1", "230MB-DAILY", "230mb1d", 200),
         ("MTN", "1", "1GB-DAILY", "1gb1d", 486),
         ("MTN", "1", "1.5GB-2DAYS", "1.5gb2d", 585),
         ("MTN", "1", "1GB-WEEKLY", "1gb1w", 785),
+        ("MTN", "1", "2.5GB-DAILY", "2.5gb1d", 600),
         ("MTN", "1", "2.5GB-2DAYS", "2.5gb2d", 885),
         ("MTN", "1", "1.5GB-WEEKLY", "1.5gb1w", 980),
         ("MTN", "1", "2GB-MONTHLY", "2gb1m", 1465),
