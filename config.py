@@ -32,5 +32,5 @@ WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
 # Server — Railway/Render inject PORT; fall back to SERVER_PORT or 8080
 SERVER_PORT = int(os.getenv("PORT", os.getenv("SERVER_PORT", "8080")))
 
-# Database
-DATABASE_PATH = os.getenv("DATABASE_PATH", "cheapdatanaija.db")
+# Database (PostgreSQL)
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://localhost/cheapdatanaija")

@@ -1,21 +1,22 @@
 """
 CheapDataNaija Bot — Database Layer
-SQLite database with aiosqlite for async operations.
+PostgreSQL database with asyncpg for async operations.
+Persistent storage that survives Render redeploys.
 """
 
 import math
-import aiosqlite
+import asyncpg
 import logging
 from typing import Any, Dict, List, Optional
-from datetime import datetime, timezone
-from config import DATABASE_PATH
+from config import DATABASE_URL
 
 logger = logging.getLogger(__name__)
 
-_db_path: str = DATABASE_PATH
-
 # ─── Profit Markup ────────────────────────────────────────────────────────────
 PROFIT_MARGIN = 0.02  # 2% markup
+
+# ─── Connection Pool ─────────────────────────────────────────────────────────
+_pool: Optional[asyncpg.Pool] = None
 
 
 def calculate_selling_price(cost_price: float) -> float:
@@ -23,112 +24,87 @@ def calculate_selling_price(cost_price: float) -> float:
     return math.ceil(cost_price * (1 + PROFIT_MARGIN))
 
 
-async def _get_db():
-    """Open a database connection with row factory and pragmas."""
-    db = await aiosqlite.connect(_db_path)
-    db.row_factory = aiosqlite.Row
-    await db.execute("PRAGMA journal_mode=WAL")
-    await db.execute("PRAGMA foreign_keys=ON")
-    return db
+async def _get_pool() -> asyncpg.Pool:
+    """Get or create the connection pool."""
+    global _pool
+    if _pool is None:
+        _pool = await asyncpg.create_pool(DATABASE_URL, min_size=2, max_size=10)
+    return _pool
+
+
+async def close_pool() -> None:
+    """Close the connection pool (call on shutdown)."""
+    global _pool
+    if _pool:
+        await _pool.close()
+        _pool = None
 
 
 async def init_db() -> None:
     """Initialize database tables."""
-    db = await _get_db()
-    try:
-        await db.executescript("""
-            CREATE TABLE IF NOT EXISTS users (
-                telegram_id INTEGER PRIMARY KEY,
-                wallet_balance REAL NOT NULL DEFAULT 0.0,
-                phone TEXT,
-                created_at TEXT NOT NULL DEFAULT (datetime('now'))
-            );
+    pool = await _get_pool()
 
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                telegram_id BIGINT PRIMARY KEY,
+                wallet_balance DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+                phone TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+        """)
+
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS orders (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
+                id SERIAL PRIMARY KEY,
+                user_id BIGINT NOT NULL REFERENCES users(telegram_id),
                 network TEXT NOT NULL,
                 size TEXT NOT NULL,
                 phone TEXT NOT NULL,
-                amount REAL NOT NULL,
-                cost_price REAL NOT NULL DEFAULT 0.0,
-                profit REAL NOT NULL DEFAULT 0.0,
+                amount DOUBLE PRECISION NOT NULL,
+                cost_price DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+                profit DOUBLE PRECISION NOT NULL DEFAULT 0.0,
                 status TEXT NOT NULL DEFAULT 'pending',
                 api_response TEXT,
-                created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                FOREIGN KEY (user_id) REFERENCES users(telegram_id)
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             );
+        """)
 
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS transactions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
+                id SERIAL PRIMARY KEY,
+                user_id BIGINT NOT NULL REFERENCES users(telegram_id),
                 type TEXT NOT NULL CHECK(type IN ('credit', 'debit')),
-                amount REAL NOT NULL,
+                amount DOUBLE PRECISION NOT NULL,
                 description TEXT,
                 reference TEXT,
-                created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                FOREIGN KEY (user_id) REFERENCES users(telegram_id)
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             );
+        """)
 
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS data_plans (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 network TEXT NOT NULL,
                 network_id TEXT NOT NULL,
                 size TEXT NOT NULL,
                 plan_id TEXT NOT NULL,
-                cost_price REAL NOT NULL,
-                price REAL NOT NULL,
+                cost_price DOUBLE PRECISION NOT NULL,
+                price DOUBLE PRECISION NOT NULL,
                 duration TEXT NOT NULL DEFAULT '30 days',
                 UNIQUE(network, size)
             );
-
-            CREATE INDEX IF NOT EXISTS idx_orders_user ON orders(user_id);
-            CREATE INDEX IF NOT EXISTS idx_transactions_user ON transactions(user_id);
-            CREATE INDEX IF NOT EXISTS idx_orders_created ON orders(created_at);
         """)
-        await db.commit()
 
-        # Migrate existing tables: add cost_price/profit columns if missing
-        try:
-            await db.execute("SELECT cost_price FROM orders LIMIT 1")
-        except Exception:
-            logger.info("Migrating orders table: adding cost_price and profit columns...")
-            await db.execute("ALTER TABLE orders ADD COLUMN cost_price REAL NOT NULL DEFAULT 0.0")
-            await db.execute("ALTER TABLE orders ADD COLUMN profit REAL NOT NULL DEFAULT 0.0")
-            await db.commit()
-
-        try:
-            await db.execute("SELECT cost_price FROM data_plans LIMIT 1")
-        except Exception:
-            logger.info("Migrating data_plans table: adding cost_price column...")
-            await db.execute("ALTER TABLE data_plans ADD COLUMN cost_price REAL NOT NULL DEFAULT 0.0")
-            # Copy current prices as cost_price, then update price with markup
-            await db.execute("UPDATE data_plans SET cost_price = price")
-            await db.execute(f"UPDATE data_plans SET price = CAST(cost_price * {1 + PROFIT_MARGIN} + 0.99 AS INTEGER)")
-            await db.commit()
-
-        # Migrate: add duration column if missing
-        try:
-            await db.execute("SELECT duration FROM data_plans LIMIT 1")
-        except Exception:
-            logger.info("Migrating data_plans table: adding duration column...")
-            await db.execute("ALTER TABLE data_plans ADD COLUMN duration TEXT NOT NULL DEFAULT '30 days'")
-            # Update durations based on plan size names
-            await db.execute("UPDATE data_plans SET duration = '1 day' WHERE size LIKE '%-DAILY'")
-            await db.execute("UPDATE data_plans SET duration = '2 days' WHERE size LIKE '%-2DAYS'")
-            await db.execute("UPDATE data_plans SET duration = '7 days' WHERE size LIKE '%-WEEKLY'")
-            # MONTHLY and SME-MONTHLY stay as default '30 days'
-            await db.commit()
+        # Create indexes if they don't exist
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_orders_user ON orders(user_id);")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_transactions_user ON transactions(user_id);")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_orders_created ON orders(created_at);")
 
         # Bootstrap plans ONLY if table is empty
-        cursor = await db.execute("SELECT COUNT(*) FROM data_plans")
-        count = (await cursor.fetchone())[0]
+        count = await conn.fetchval("SELECT COUNT(*) FROM data_plans")
         if count == 0:
             logger.info("Bootstrapping data_plans table with SMEDATA prices + 2% markup...")
-            # Cost prices from SMEDATA.NG (API reseller sale prices)
-            # Format: (network, network_id, size, plan_id, cost_price, duration)
-            # Plan IDs match the SMEDATA API documentation exactly
-            # Durations match the exact SMEDATA.NG catalog
             default_plans = [
                 # ─── MTN Data Share (SME) — 30 days ──────────────────
                 ("MTN", "1", "1GB-SME-MONTHLY", "1gb", 600, "30 days"),
@@ -182,42 +158,37 @@ async def init_db() -> None:
             ]
             for network, network_id, size, plan_id, cost_price, duration in default_plans:
                 selling_price = calculate_selling_price(cost_price)
-                await db.execute(
-                    "INSERT INTO data_plans (network, network_id, size, plan_id, cost_price, price, duration) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (network, network_id, size, plan_id, cost_price, selling_price, duration)
+                await conn.execute(
+                    """INSERT INTO data_plans (network, network_id, size, plan_id, cost_price, price, duration)
+                       VALUES ($1, $2, $3, $4, $5, $6, $7)
+                       ON CONFLICT (network, size) DO NOTHING""",
+                    network, network_id, size, plan_id, cost_price, float(selling_price), duration
                 )
-            await db.commit()
 
-        logger.info("Database initialized successfully.")
-    finally:
-        await db.close()
+    logger.info("Database initialized successfully.")
 
 
 async def get_or_create_user(telegram_id: int) -> Dict[str, Any]:
     """Get existing user or create a new one. Returns user dict."""
-    db = await _get_db()
-    try:
-        cursor = await db.execute(
-            "SELECT telegram_id, wallet_balance, phone, created_at FROM users WHERE telegram_id = ?",
-            (telegram_id,)
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT telegram_id, wallet_balance, phone, created_at FROM users WHERE telegram_id = $1",
+            telegram_id
         )
-        row = await cursor.fetchone()
         if row:
             return dict(row)
 
-        await db.execute(
-            "INSERT INTO users (telegram_id) VALUES (?)",
-            (telegram_id,)
+        await conn.execute(
+            "INSERT INTO users (telegram_id) VALUES ($1) ON CONFLICT DO NOTHING",
+            telegram_id
         )
-        await db.commit()
         return {
             "telegram_id": telegram_id,
             "wallet_balance": 0.0,
             "phone": None,
-            "created_at": datetime.now(timezone.utc).isoformat()
+            "created_at": None
         }
-    finally:
-        await db.close()
 
 
 async def get_balance(telegram_id: int) -> float:
@@ -230,17 +201,14 @@ async def update_balance(telegram_id: int, amount: float) -> float:
     """Atomically update user balance. amount can be positive (credit) or negative (debit).
     Returns the new balance. Raises ValueError if debit would go below zero.
     """
-    db = await _get_db()
-    try:
-        cursor = await db.execute(
-            "SELECT wallet_balance FROM users WHERE telegram_id = ?",
-            (telegram_id,)
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT wallet_balance FROM users WHERE telegram_id = $1",
+            telegram_id
         )
-        row = await cursor.fetchone()
         if not row:
-            await db.close()
             await get_or_create_user(telegram_id)
-            db = await _get_db()
             current = 0.0
         else:
             current = float(row["wallet_balance"])
@@ -252,14 +220,11 @@ async def update_balance(telegram_id: int, amount: float) -> float:
                 f"Attempted debit: ₦{abs(amount):,.2f}"
             )
 
-        await db.execute(
-            "UPDATE users SET wallet_balance = ? WHERE telegram_id = ?",
-            (new_balance, telegram_id)
+        await conn.execute(
+            "UPDATE users SET wallet_balance = $1 WHERE telegram_id = $2",
+            new_balance, telegram_id
         )
-        await db.commit()
         return new_balance
-    finally:
-        await db.close()
 
 
 async def insert_order(
@@ -274,18 +239,14 @@ async def insert_order(
     api_response: Optional[str] = None,
 ) -> int:
     """Insert a new order. Returns the order ID."""
-    db = await _get_db()
-    try:
-        cursor = await db.execute(
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        order_id = await conn.fetchval(
             """INSERT INTO orders (user_id, network, size, phone, amount, cost_price, profit, status, api_response)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (user_id, network, size, phone, amount, cost_price, profit, status, api_response)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id""",
+            user_id, network, size, phone, amount, cost_price, profit, status, api_response
         )
-        await db.commit()
-        order_id = cursor.lastrowid
         return order_id if order_id is not None else 0
-    finally:
-        await db.close()
 
 
 async def update_order_status(
@@ -294,36 +255,30 @@ async def update_order_status(
     api_response: Optional[str] = None,
 ) -> None:
     """Update the status of an order."""
-    db = await _get_db()
-    try:
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
         if api_response:
-            await db.execute(
-                "UPDATE orders SET status = ?, api_response = ? WHERE id = ?",
-                (status, api_response, order_id)
+            await conn.execute(
+                "UPDATE orders SET status = $1, api_response = $2 WHERE id = $3",
+                status, api_response, order_id
             )
         else:
-            await db.execute(
-                "UPDATE orders SET status = ? WHERE id = ?",
-                (status, order_id)
+            await conn.execute(
+                "UPDATE orders SET status = $1 WHERE id = $2",
+                status, order_id
             )
-        await db.commit()
-    finally:
-        await db.close()
 
 
 async def get_orders(telegram_id: int, limit: int = 10) -> List[Dict[str, Any]]:
     """Get recent orders for a user."""
-    db = await _get_db()
-    try:
-        cursor = await db.execute(
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
             """SELECT id, network, size, phone, amount, status, created_at
-               FROM orders WHERE user_id = ? ORDER BY created_at DESC LIMIT ?""",
-            (telegram_id, limit)
+               FROM orders WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2""",
+            telegram_id, limit
         )
-        rows = await cursor.fetchall()
         return [dict(r) for r in rows]
-    finally:
-        await db.close()
 
 
 async def insert_transaction(
@@ -334,61 +289,49 @@ async def insert_transaction(
     reference: Optional[str] = None,
 ) -> int:
     """Insert a wallet transaction record. Returns transaction ID."""
-    db = await _get_db()
-    try:
-        cursor = await db.execute(
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        tx_id = await conn.fetchval(
             """INSERT INTO transactions (user_id, type, amount, description, reference)
-               VALUES (?, ?, ?, ?, ?)""",
-            (user_id, tx_type, amount, description, reference)
+               VALUES ($1, $2, $3, $4, $5) RETURNING id""",
+            user_id, tx_type, amount, description, reference
         )
-        await db.commit()
-        tx_id = cursor.lastrowid
         return tx_id if tx_id is not None else 0
-    finally:
-        await db.close()
 
 
 async def get_transactions(telegram_id: int, limit: int = 10) -> List[Dict[str, Any]]:
     """Get recent wallet transactions."""
-    db = await _get_db()
-    try:
-        cursor = await db.execute(
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
             """SELECT id, type, amount, description, reference, created_at
-               FROM transactions WHERE user_id = ? ORDER BY created_at DESC LIMIT ?""",
-            (telegram_id, limit)
+               FROM transactions WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2""",
+            telegram_id, limit
         )
-        rows = await cursor.fetchall()
         return [dict(r) for r in rows]
-    finally:
-        await db.close()
+
 
 # ─── Data Plans Management ───────────────────────────────────────────────────
 
 async def get_all_plans() -> List[Dict[str, Any]]:
     """Get all available data plans from the database."""
-    db = await _get_db()
-    try:
-        cursor = await db.execute("SELECT * FROM data_plans ORDER BY network ASC, price ASC")
-        rows = await cursor.fetchall()
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("SELECT * FROM data_plans ORDER BY network ASC, price ASC")
         return [dict(r) for r in rows]
-    finally:
-        await db.close()
 
 
 async def get_plan(network: str, size: str) -> Optional[Dict[str, Any]]:
     """Get a specific data plan by network and size."""
-    db = await _get_db()
+    pool = await _get_pool()
     network = network.upper().strip()
     size = size.upper().strip().replace(" ", "")
-    try:
-        cursor = await db.execute(
-            "SELECT * FROM data_plans WHERE network = ? AND size = ?",
-            (network, size)
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM data_plans WHERE network = $1 AND size = $2",
+            network, size
         )
-        row = await cursor.fetchone()
         return dict(row) if row else None
-    finally:
-        await db.close()
 
 
 async def add_or_update_plan(network: str, network_id: str, size: str, plan_id: str, cost_price: float, duration: str = "30 days") -> None:
@@ -396,38 +339,32 @@ async def add_or_update_plan(network: str, network_id: str, size: str, plan_id: 
     network = network.upper().strip()
     size = size.upper().strip().replace(" ", "")
     selling_price = calculate_selling_price(cost_price)
-    db = await _get_db()
-    try:
-        await db.execute(
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
             """INSERT INTO data_plans (network, network_id, size, plan_id, cost_price, price, duration)
-               VALUES (?, ?, ?, ?, ?, ?, ?)
+               VALUES ($1, $2, $3, $4, $5, $6, $7)
                ON CONFLICT(network, size) DO UPDATE SET
-               network_id=excluded.network_id,
-               plan_id=excluded.plan_id,
-               cost_price=excluded.cost_price,
-               price=excluded.price,
-               duration=excluded.duration""",
-            (network, network_id, size, plan_id, cost_price, selling_price, duration)
+               network_id=EXCLUDED.network_id,
+               plan_id=EXCLUDED.plan_id,
+               cost_price=EXCLUDED.cost_price,
+               price=EXCLUDED.price,
+               duration=EXCLUDED.duration""",
+            network, network_id, size, plan_id, cost_price, float(selling_price), duration
         )
-        await db.commit()
-    finally:
-        await db.close()
 
 
 async def delete_plan(network: str, size: str) -> bool:
     """Delete a plan by network and size. Returns True if deleted, False if not found."""
     network = network.upper().strip()
     size = size.upper().strip().replace(" ", "")
-    db = await _get_db()
-    try:
-        cursor = await db.execute(
-            "DELETE FROM data_plans WHERE network = ? AND size = ?",
-            (network, size)
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            "DELETE FROM data_plans WHERE network = $1 AND size = $2",
+            network, size
         )
-        await db.commit()
-        return cursor.rowcount > 0
-    finally:
-        await db.close()
+        return result != "DELETE 0"
 
 
 # ─── Profit / Gains Analytics ────────────────────────────────────────────────
@@ -436,64 +373,60 @@ async def get_profit_stats() -> Dict[str, Any]:
     """Get profit statistics: today, this week, this month, this year, and all-time.
     Only counts completed orders.
     """
-    db = await _get_db()
-    try:
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
         stats = {}
 
         # Today
-        cursor = await db.execute(
+        row = await conn.fetchrow(
             """SELECT COALESCE(SUM(profit), 0) as total_profit,
                       COALESCE(SUM(amount), 0) as total_revenue,
                       COALESCE(SUM(cost_price), 0) as total_cost,
                       COUNT(*) as order_count
                FROM orders
                WHERE status = 'completed'
-               AND date(created_at) = date('now')"""
+               AND DATE(created_at) = CURRENT_DATE"""
         )
-        row = await cursor.fetchone()
         stats["today"] = dict(row)
 
         # This week (last 7 days)
-        cursor = await db.execute(
+        row = await conn.fetchrow(
             """SELECT COALESCE(SUM(profit), 0) as total_profit,
                       COALESCE(SUM(amount), 0) as total_revenue,
                       COALESCE(SUM(cost_price), 0) as total_cost,
                       COUNT(*) as order_count
                FROM orders
                WHERE status = 'completed'
-               AND created_at >= datetime('now', '-7 days')"""
+               AND created_at >= NOW() - INTERVAL '7 days'"""
         )
-        row = await cursor.fetchone()
         stats["week"] = dict(row)
 
         # This month
-        cursor = await db.execute(
+        row = await conn.fetchrow(
             """SELECT COALESCE(SUM(profit), 0) as total_profit,
                       COALESCE(SUM(amount), 0) as total_revenue,
                       COALESCE(SUM(cost_price), 0) as total_cost,
                       COUNT(*) as order_count
                FROM orders
                WHERE status = 'completed'
-               AND strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now')"""
+               AND TO_CHAR(created_at, 'YYYY-MM') = TO_CHAR(NOW(), 'YYYY-MM')"""
         )
-        row = await cursor.fetchone()
         stats["month"] = dict(row)
 
         # This year
-        cursor = await db.execute(
+        row = await conn.fetchrow(
             """SELECT COALESCE(SUM(profit), 0) as total_profit,
                       COALESCE(SUM(amount), 0) as total_revenue,
                       COALESCE(SUM(cost_price), 0) as total_cost,
                       COUNT(*) as order_count
                FROM orders
                WHERE status = 'completed'
-               AND strftime('%Y', created_at) = strftime('%Y', 'now')"""
+               AND TO_CHAR(created_at, 'YYYY') = TO_CHAR(NOW(), 'YYYY')"""
         )
-        row = await cursor.fetchone()
         stats["year"] = dict(row)
 
         # All time
-        cursor = await db.execute(
+        row = await conn.fetchrow(
             """SELECT COALESCE(SUM(profit), 0) as total_profit,
                       COALESCE(SUM(amount), 0) as total_revenue,
                       COALESCE(SUM(cost_price), 0) as total_cost,
@@ -501,14 +434,10 @@ async def get_profit_stats() -> Dict[str, Any]:
                FROM orders
                WHERE status = 'completed'"""
         )
-        row = await cursor.fetchone()
         stats["all_time"] = dict(row)
 
         # Total users
-        cursor = await db.execute("SELECT COUNT(*) as count FROM users")
-        row = await cursor.fetchone()
+        row = await conn.fetchrow("SELECT COUNT(*) as count FROM users")
         stats["total_users"] = row["count"]
 
         return stats
-    finally:
-        await db.close()

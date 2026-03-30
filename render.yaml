@@ -1,3 +1,10 @@
+databases:
+  - name: cheapdatanaija-db
+    plan: free
+    region: frankfurt
+    databaseName: cheapdatanaija
+    user: cheapdatanaija
+
 services:
   - type: web
     name: cheapdatanaija-bot
@@ -19,10 +26,8 @@ services:
         sync: false
       - key: WEBHOOK_PATH
         value: /webhook/bot
-      - key: DATABASE_PATH
-        value: /app/data/cheapdatanaija.db
+      - key: DATABASE_URL
+        fromDatabase:
+          name: cheapdatanaija-db
+          property: connectionString
     healthCheckPath: /health
-    disk:
-      name: bot-data
-      mountPath: /app/data
-      sizeGB: 1

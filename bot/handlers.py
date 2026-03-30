@@ -338,15 +338,12 @@ async def cmd_syncsetup(message: Message):
     if not is_admin(message.from_user.id):
         return
         
-    from database import add_or_update_plan, _get_db
+    from database import add_or_update_plan, _get_pool
     
     # Clear old plans first to remove stale entries
-    db = await _get_db()
-    try:
-        await db.execute("DELETE FROM data_plans")
-        await db.commit()
-    finally:
-        await db.close()
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM data_plans")
     
     # Full catalog matching SMEDATA API docs + website prices
     full_plans = [

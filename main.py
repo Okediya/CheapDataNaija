@@ -183,6 +183,10 @@ async def on_shutdown(app: web.Application):
     # means Telegram won't be able to wake the server up when a new message arrives.
     # await bot.delete_webhook()
     
+    # Close database pool
+    from database import close_pool
+    await close_pool()
+    
     await bot.session.close()
     logger.info("Bot shut down cleanly.")
 
