@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 _db_path: str = DATABASE_PATH
 
 # ─── Profit Markup ────────────────────────────────────────────────────────────
-PROFIT_MARGIN = 0.10  # 10% markup
+PROFIT_MARGIN = 0.02  # 2% markup
 
 
 def calculate_selling_price(cost_price: float) -> float:
