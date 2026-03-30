@@ -73,10 +73,12 @@ async def buy_data(network: str, size: str, phone: str) -> dict:
     network_id = plan["network_id"]
     plan_id = plan["plan_id"]
 
+    logger.info(f"buy_data: network={network}, plan_id={plan_id}, network_id={network_id}, phone={phone}, plan={plan}")
+
     url = f"{SMEDATA_BASE_URL}data"
     params = {
         "token": SMEDATA_TOKEN,
-        "network": network.lower(),
+        "network": network,
         "phone": phone,
         "size": plan_id,
     }
