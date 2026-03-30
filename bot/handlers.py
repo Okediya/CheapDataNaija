@@ -193,24 +193,63 @@ async def cmd_syncsetup(message: Message):
     if not is_admin(message.from_user.id):
         return
         
-    correct_plans = [
-        ("MTN", "1GB", "1gb"), ("MTN", "2GB", "2gb"), ("MTN", "3GB", "3gb"), 
-        ("MTN", "5GB", "5gb"), ("MTN", "10GB", "10gb1m"),
-        ("AIRTEL", "1GB", "1gb1w"), ("AIRTEL", "2GB", "2gb1m"), ("AIRTEL", "3GB", "3gb1m"), ("AIRTEL", "5GB", "5gb1m"),
-        ("GLO", "1GB", "1GB"), ("GLO", "2GB", "2GB"), ("GLO", "3GB", "3GB"), ("GLO", "5GB", "5GB")
+    from database import add_or_update_plan
+    
+    # Full catalog matching SMEDATA API docs + website prices
+    full_plans = [
+        # MTN Data Share (SME)
+        ("MTN", "1", "1GB", "1gb", 600),
+        ("MTN", "1", "2GB", "2gb", 1200),
+        ("MTN", "1", "3GB", "3gb", 1800),
+        ("MTN", "1", "5GB", "5gb", 3000),
+        # MTN Direct Data
+        ("MTN", "1", "1GB-DAILY", "1gb1d", 486),
+        ("MTN", "1", "1.5GB-2DAYS", "1.5gb2d", 585),
+        ("MTN", "1", "1GB-WEEKLY", "1gb1w", 785),
+        ("MTN", "1", "2.5GB-2DAYS", "2.5gb2d", 885),
+        ("MTN", "1", "1.5GB-WEEKLY", "1.5gb1w", 980),
+        ("MTN", "1", "2GB-MONTHLY", "2gb1m", 1465),
+        ("MTN", "1", "2.7GB-MONTHLY", "2.7gb1m", 1950),
+        ("MTN", "1", "6GB-WEEKLY", "6gb1w", 2430),
+        ("MTN", "1", "3.5GB-MONTHLY", "3.5gb1m", 2450),
+        ("MTN", "1", "7GB", "7gb1m", 3420),
+        ("MTN", "1", "10GB", "10gb1m", 4400),
+        ("MTN", "1", "12.5GB", "12.5gb1m", 5400),
+        ("MTN", "1", "16.5GB", "16.5gb1m", 6350),
+        ("MTN", "1", "20GB", "20gb1m", 7350),
+        ("MTN", "1", "25GB", "25gb1m", 8800),
+        # Airtel Direct Data
+        ("AIRTEL", "2", "300MB-2DAYS", "300mb2d", 297),
+        ("AIRTEL", "2", "500MB-WEEKLY", "500mb1w", 490),
+        ("AIRTEL", "2", "1.5GB-2DAYS", "1.5gb2d", 590),
+        ("AIRTEL", "2", "1GB-WEEKLY", "1gb1w", 780),
+        ("AIRTEL", "2", "1.5GB-WEEKLY", "1.5gb1w", 980),
+        ("AIRTEL", "2", "3.5GB-WEEKLY", "3.5gb1w", 1470),
+        ("AIRTEL", "2", "2GB-MONTHLY", "2gb1m", 1480),
+        ("AIRTEL", "2", "3GB-MONTHLY", "3gb1m", 1970),
+        ("AIRTEL", "2", "6GB-WEEKLY", "6gb1w", 2450),
+        ("AIRTEL", "2", "4GB-MONTHLY", "4gb1m", 2470),
+        ("AIRTEL", "2", "10GB-WEEKLY", "10gb1w", 2950),
+        ("AIRTEL", "2", "8GB-MONTHLY", "8gb1m", 2970),
+        ("AIRTEL", "2", "10GB-MONTHLY", "10gb1m", 3930),
+        ("AIRTEL", "2", "15GB-WEEKLY", "15gb1w", 4870),
+        ("AIRTEL", "2", "13GB-MONTHLY", "13gb1m", 4900),
+        ("AIRTEL", "2", "18GB-MONTHLY", "18gb1m", 5880),
+        ("AIRTEL", "2", "25GB-MONTHLY", "25gb1m", 7830),
+        ("AIRTEL", "2", "35GB-MONTHLY", "35gb1m", 9770),
+        # GLO CG Data
+        ("GLO", "3", "500MB", "500MB", 280),
+        ("GLO", "3", "1GB", "1GB", 480),
+        ("GLO", "3", "2GB", "2GB", 960),
+        ("GLO", "3", "3GB", "3GB", 1440),
+        ("GLO", "3", "5GB", "5GB", 2400),
+        ("GLO", "3", "10GB", "10GB", 4800),
     ]
     
-    import aiosqlite
-    from config import DATABASE_PATH
-    db = await aiosqlite.connect(DATABASE_PATH)
-    try:
-        for net, size, pid in correct_plans:
-            await db.execute("UPDATE data_plans SET plan_id=? WHERE network=? AND size=?", (pid, net, size))
-        await db.commit()
-    finally:
-        await db.close()
+    for net, nid, size, pid, cost in full_plans:
+        await add_or_update_plan(net, nid, size, pid, cost)
         
-    await message.answer("✅ Database synchronized! The exact SMEDATA Plan IDs have been injected into your live Render bot.", parse_mode="Markdown")
+    await message.answer(f"✅ Database synchronized with **{len(full_plans)} plans**! All SMEDATA plans with correct prices + 10% markup injected.", parse_mode="Markdown")
 
 @router.message(Command("myid"))
 async def cmd_myid(message: Message):

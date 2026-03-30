@@ -111,25 +111,57 @@ async def init_db() -> None:
         count = (await cursor.fetchone())[0]
         if count == 0:
             logger.info("Bootstrapping data_plans table with SMEDATA prices + 10% markup...")
-            # Cost prices from SMEDATA.NG (reseller prices)
+            # Cost prices from SMEDATA.NG (API reseller sale prices)
+            # Format: (network, network_id, size, plan_id, cost_price)
+            # Plan IDs match the SMEDATA API documentation exactly
             default_plans = [
-                # (network, network_id, size, plan_id, cost_price)
-                # MTN SME Data
-                ("MTN", "1", "1GB", "1gb", 250),
-                ("MTN", "1", "2GB", "2gb", 500),
-                ("MTN", "1", "3GB", "3gb", 750),
-                ("MTN", "1", "5GB", "5gb", 1200),
-                ("MTN", "1", "10GB", "10gb1m", 2400),
-                # Airtel CG Data
-                ("AIRTEL", "2", "1GB", "1gb1w", 250),
-                ("AIRTEL", "2", "2GB", "2gb1m", 500),
-                ("AIRTEL", "2", "3GB", "3gb1m", 750),
-                ("AIRTEL", "2", "5GB", "5gb1m", 1200),
-                # GLO CG Data
-                ("GLO", "3", "1GB", "1GB", 240),
-                ("GLO", "3", "2GB", "2GB", 480),
-                ("GLO", "3", "3GB", "3GB", 720),
-                ("GLO", "3", "5GB", "5GB", 1150),
+                # ─── MTN Data Share (SME) ─────────────────────────────
+                ("MTN", "1", "1GB", "1gb", 600),
+                ("MTN", "1", "2GB", "2gb", 1200),
+                ("MTN", "1", "3GB", "3gb", 1800),
+                ("MTN", "1", "5GB", "5gb", 3000),
+                # ─── MTN Direct Data ──────────────────────────────────
+                ("MTN", "1", "1GB-DAILY", "1gb1d", 486),
+                ("MTN", "1", "1.5GB-2DAYS", "1.5gb2d", 585),
+                ("MTN", "1", "1GB-WEEKLY", "1gb1w", 785),
+                ("MTN", "1", "2.5GB-2DAYS", "2.5gb2d", 885),
+                ("MTN", "1", "1.5GB-WEEKLY", "1.5gb1w", 980),
+                ("MTN", "1", "2GB-MONTHLY", "2gb1m", 1465),
+                ("MTN", "1", "2.7GB-MONTHLY", "2.7gb1m", 1950),
+                ("MTN", "1", "6GB-WEEKLY", "6gb1w", 2430),
+                ("MTN", "1", "3.5GB-MONTHLY", "3.5gb1m", 2450),
+                ("MTN", "1", "7GB", "7gb1m", 3420),
+                ("MTN", "1", "10GB", "10gb1m", 4400),
+                ("MTN", "1", "12.5GB", "12.5gb1m", 5400),
+                ("MTN", "1", "16.5GB", "16.5gb1m", 6350),
+                ("MTN", "1", "20GB", "20gb1m", 7350),
+                ("MTN", "1", "25GB", "25gb1m", 8800),
+                # ─── Airtel Direct Data ───────────────────────────────
+                ("AIRTEL", "2", "300MB-2DAYS", "300mb2d", 297),
+                ("AIRTEL", "2", "500MB-WEEKLY", "500mb1w", 490),
+                ("AIRTEL", "2", "1.5GB-2DAYS", "1.5gb2d", 590),
+                ("AIRTEL", "2", "1GB-WEEKLY", "1gb1w", 780),
+                ("AIRTEL", "2", "1.5GB-WEEKLY", "1.5gb1w", 980),
+                ("AIRTEL", "2", "3.5GB-WEEKLY", "3.5gb1w", 1470),
+                ("AIRTEL", "2", "2GB-MONTHLY", "2gb1m", 1480),
+                ("AIRTEL", "2", "3GB-MONTHLY", "3gb1m", 1970),
+                ("AIRTEL", "2", "6GB-WEEKLY", "6gb1w", 2450),
+                ("AIRTEL", "2", "4GB-MONTHLY", "4gb1m", 2470),
+                ("AIRTEL", "2", "10GB-WEEKLY", "10gb1w", 2950),
+                ("AIRTEL", "2", "8GB-MONTHLY", "8gb1m", 2970),
+                ("AIRTEL", "2", "10GB-MONTHLY", "10gb1m", 3930),
+                ("AIRTEL", "2", "15GB-WEEKLY", "15gb1w", 4870),
+                ("AIRTEL", "2", "13GB-MONTHLY", "13gb1m", 4900),
+                ("AIRTEL", "2", "18GB-MONTHLY", "18gb1m", 5880),
+                ("AIRTEL", "2", "25GB-MONTHLY", "25gb1m", 7830),
+                ("AIRTEL", "2", "35GB-MONTHLY", "35gb1m", 9770),
+                # ─── GLO CG Data ─────────────────────────────────────
+                ("GLO", "3", "500MB", "500MB", 280),
+                ("GLO", "3", "1GB", "1GB", 480),
+                ("GLO", "3", "2GB", "2GB", 960),
+                ("GLO", "3", "3GB", "3GB", 1440),
+                ("GLO", "3", "5GB", "5GB", 2400),
+                ("GLO", "3", "10GB", "10GB", 4800),
             ]
             for network, network_id, size, plan_id, cost_price in default_plans:
                 selling_price = calculate_selling_price(cost_price)
