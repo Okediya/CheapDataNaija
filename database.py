@@ -115,11 +115,11 @@ async def init_db() -> None:
             # Format: (network, network_id, size, plan_id, cost_price)
             # Plan IDs match the SMEDATA API documentation exactly
             default_plans = [
-                # ─── MTN Data Share (SME) ─────────────────────────────
-                ("MTN", "1", "1GB", "1gb", 600),
-                ("MTN", "1", "2GB", "2gb", 1200),
-                ("MTN", "1", "3GB", "3gb", 1800),
-                ("MTN", "1", "5GB", "5gb", 3000),
+                # ─── MTN Data Share (SME) — 30 days ──────────────────
+                ("MTN", "1", "1GB-MONTHLY", "1gb", 600),
+                ("MTN", "1", "2GB-MONTHLY", "2gb", 1200),
+                ("MTN", "1", "3GB-MONTHLY", "3gb", 1800),
+                ("MTN", "1", "5GB-MONTHLY", "5gb", 3000),
                 # ─── MTN Direct Data ──────────────────────────────────
                 ("MTN", "1", "1GB-DAILY", "1gb1d", 486),
                 ("MTN", "1", "1.5GB-2DAYS", "1.5gb2d", 585),
@@ -130,12 +130,12 @@ async def init_db() -> None:
                 ("MTN", "1", "2.7GB-MONTHLY", "2.7gb1m", 1950),
                 ("MTN", "1", "6GB-WEEKLY", "6gb1w", 2430),
                 ("MTN", "1", "3.5GB-MONTHLY", "3.5gb1m", 2450),
-                ("MTN", "1", "7GB", "7gb1m", 3420),
-                ("MTN", "1", "10GB", "10gb1m", 4400),
-                ("MTN", "1", "12.5GB", "12.5gb1m", 5400),
-                ("MTN", "1", "16.5GB", "16.5gb1m", 6350),
-                ("MTN", "1", "20GB", "20gb1m", 7350),
-                ("MTN", "1", "25GB", "25gb1m", 8800),
+                ("MTN", "1", "7GB-MONTHLY", "7gb1m", 3420),
+                ("MTN", "1", "10GB-MONTHLY", "10gb1m", 4400),
+                ("MTN", "1", "12.5GB-MONTHLY", "12.5gb1m", 5400),
+                ("MTN", "1", "16.5GB-MONTHLY", "16.5gb1m", 6350),
+                ("MTN", "1", "20GB-MONTHLY", "20gb1m", 7350),
+                ("MTN", "1", "25GB-MONTHLY", "25gb1m", 8800),
                 # ─── Airtel Direct Data ───────────────────────────────
                 ("AIRTEL", "2", "300MB-2DAYS", "300mb2d", 297),
                 ("AIRTEL", "2", "500MB-WEEKLY", "500mb1w", 490),
@@ -155,13 +155,13 @@ async def init_db() -> None:
                 ("AIRTEL", "2", "18GB-MONTHLY", "18gb1m", 5880),
                 ("AIRTEL", "2", "25GB-MONTHLY", "25gb1m", 7830),
                 ("AIRTEL", "2", "35GB-MONTHLY", "35gb1m", 9770),
-                # ─── GLO CG Data ─────────────────────────────────────
-                ("GLO", "3", "500MB", "500MB", 280),
-                ("GLO", "3", "1GB", "1GB", 480),
-                ("GLO", "3", "2GB", "2GB", 960),
-                ("GLO", "3", "3GB", "3GB", 1440),
-                ("GLO", "3", "5GB", "5GB", 2400),
-                ("GLO", "3", "10GB", "10GB", 4800),
+                # ─── GLO CG Data — 30 days ───────────────────────────
+                ("GLO", "3", "500MB-MONTHLY", "500MB", 280),
+                ("GLO", "3", "1GB-MONTHLY", "1GB", 480),
+                ("GLO", "3", "2GB-MONTHLY", "2GB", 960),
+                ("GLO", "3", "3GB-MONTHLY", "3GB", 1440),
+                ("GLO", "3", "5GB-MONTHLY", "5GB", 2400),
+                ("GLO", "3", "10GB-MONTHLY", "10GB", 4800),
             ]
             for network, network_id, size, plan_id, cost_price in default_plans:
                 selling_price = calculate_selling_price(cost_price)
