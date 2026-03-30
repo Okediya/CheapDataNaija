@@ -116,10 +116,10 @@ async def init_db() -> None:
             # Plan IDs match the SMEDATA API documentation exactly
             default_plans = [
                 # ─── MTN Data Share (SME) — 30 days ──────────────────
-                ("MTN", "1", "1GB-MONTHLY", "1gb", 600),
-                ("MTN", "1", "2GB-MONTHLY", "2gb", 1200),
-                ("MTN", "1", "3GB-MONTHLY", "3gb", 1800),
-                ("MTN", "1", "5GB-MONTHLY", "5gb", 3000),
+                ("MTN", "1", "1GB-SME", "1gb", 600),
+                ("MTN", "1", "2GB-SME", "2gb", 1200),
+                ("MTN", "1", "3GB-SME", "3gb", 1800),
+                ("MTN", "1", "5GB-SME", "5gb", 3000),
                 # ─── MTN Direct Data ──────────────────────────────────
                 ("MTN", "1", "1GB-DAILY", "1gb1d", 486),
                 ("MTN", "1", "1.5GB-2DAYS", "1.5gb2d", 585),
