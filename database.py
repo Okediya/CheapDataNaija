@@ -78,6 +78,7 @@ async def init_db() -> None:
                 plan_id TEXT NOT NULL,
                 cost_price REAL NOT NULL,
                 price REAL NOT NULL,
+                duration TEXT NOT NULL DEFAULT '30 days',
                 UNIQUE(network, size)
             );
 
@@ -106,70 +107,83 @@ async def init_db() -> None:
             await db.execute(f"UPDATE data_plans SET price = CAST(cost_price * {1 + PROFIT_MARGIN} + 0.99 AS INTEGER)")
             await db.commit()
 
+        # Migrate: add duration column if missing
+        try:
+            await db.execute("SELECT duration FROM data_plans LIMIT 1")
+        except Exception:
+            logger.info("Migrating data_plans table: adding duration column...")
+            await db.execute("ALTER TABLE data_plans ADD COLUMN duration TEXT NOT NULL DEFAULT '30 days'")
+            # Set duration based on size naming convention
+            await db.execute("UPDATE data_plans SET duration = '1 day' WHERE size LIKE '%DAILY%' OR size LIKE '%1D%'")
+            await db.execute("UPDATE data_plans SET duration = '2 days' WHERE size LIKE '%2DAYS%' OR size LIKE '%2D%'")
+            await db.execute("UPDATE data_plans SET duration = '7 days' WHERE size LIKE '%WEEKLY%' OR size LIKE '%1W%'")
+            await db.execute("UPDATE data_plans SET duration = '30 days' WHERE size LIKE '%MONTHLY%' OR size LIKE '%1M%' OR size LIKE '%SME%'")
+            await db.commit()
+
         # Bootstrap plans ONLY if table is empty
         cursor = await db.execute("SELECT COUNT(*) FROM data_plans")
         count = (await cursor.fetchone())[0]
         if count == 0:
             logger.info("Bootstrapping data_plans table with SMEDATA prices + 2% markup...")
             # Cost prices from SMEDATA.NG (API reseller sale prices)
-            # Format: (network, network_id, size, plan_id, cost_price)
+            # Format: (network, network_id, size, plan_id, cost_price, duration)
             # Plan IDs match the SMEDATA API documentation exactly
             default_plans = [
                 # ─── MTN Data Share (SME) — 30 days ──────────────────
-                ("MTN", "1", "1GB-SME-MONTHLY", "1gb", 600),
-                ("MTN", "1", "2GB-SME-MONTHLY", "2gb", 1200),
-                ("MTN", "1", "3GB-SME-MONTHLY", "3gb", 1800),
-                ("MTN", "1", "5GB-SME-MONTHLY", "5gb", 3000),
+                ("MTN", "1", "1GB-SME-MONTHLY", "1gb", 600, "30 days"),
+                ("MTN", "1", "2GB-SME-MONTHLY", "2gb", 1200, "30 days"),
+                ("MTN", "1", "3GB-SME-MONTHLY", "3gb", 1800, "30 days"),
+                ("MTN", "1", "5GB-SME-MONTHLY", "5gb", 3000, "30 days"),
                 # ─── MTN Direct Data ──────────────────────────────────
-                ("MTN", "1", "230MB-DAILY", "230mb1d", 200),
-                ("MTN", "1", "1GB-DAILY", "1gb1d", 486),
-                ("MTN", "1", "1.5GB-2DAYS", "1.5gb2d", 585),
-                ("MTN", "1", "1GB-WEEKLY", "1gb1w", 785),
-                ("MTN", "1", "2.5GB-DAILY", "2.5gb1d", 600),
-                ("MTN", "1", "2.5GB-2DAYS", "2.5gb2d", 885),
-                ("MTN", "1", "1.5GB-WEEKLY", "1.5gb1w", 980),
-                ("MTN", "1", "2GB-MONTHLY", "2gb1m", 1465),
-                ("MTN", "1", "2.7GB-MONTHLY", "2.7gb1m", 1950),
-                ("MTN", "1", "6GB-WEEKLY", "6gb1w", 2430),
-                ("MTN", "1", "3.5GB-MONTHLY", "3.5gb1m", 2450),
-                ("MTN", "1", "7GB-MONTHLY", "7gb1m", 3420),
-                ("MTN", "1", "10GB-MONTHLY", "10gb1m", 4400),
-                ("MTN", "1", "12.5GB-MONTHLY", "12.5gb1m", 5400),
-                ("MTN", "1", "16.5GB-MONTHLY", "16.5gb1m", 6350),
-                ("MTN", "1", "20GB-MONTHLY", "20gb1m", 7350),
-                ("MTN", "1", "25GB-MONTHLY", "25gb1m", 8800),
+                ("MTN", "1", "230MB-DAILY", "230mb1d", 200, "1 day"),
+                ("MTN", "1", "1GB-DAILY", "1gb1d", 486, "1 day"),
+                ("MTN", "1", "1.5GB-2DAYS", "1.5gb2d", 585, "2 days"),
+                ("MTN", "1", "1GB-WEEKLY", "1gb1w", 785, "7 days"),
+                ("MTN", "1", "2.5GB-DAILY", "2.5gb1d", 600, "1 day"),
+                ("MTN", "1", "2.5GB-2DAYS", "2.5gb2d", 885, "2 days"),
+                ("MTN", "1", "1.5GB-WEEKLY", "1.5gb1w", 980, "7 days"),
+                ("MTN", "1", "2GB-MONTHLY", "2gb1m", 1465, "30 days"),
+                ("MTN", "1", "2.7GB-MONTHLY", "2.7gb1m", 1950, "30 days"),
+                ("MTN", "1", "6GB-WEEKLY", "6gb1w", 2430, "7 days"),
+                ("MTN", "1", "3.5GB-MONTHLY", "3.5gb1m", 2450, "30 days"),
+                ("MTN", "1", "7GB-MONTHLY", "7gb1m", 3420, "30 days"),
+                ("MTN", "1", "10GB-MONTHLY", "10gb1m", 4400, "30 days"),
+                ("MTN", "1", "12.5GB-MONTHLY", "12.5gb1m", 5400, "30 days"),
+                ("MTN", "1", "16.5GB-MONTHLY", "16.5gb1m", 6350, "30 days"),
+                ("MTN", "1", "20GB-MONTHLY", "20gb1m", 7350, "30 days"),
+                ("MTN", "1", "25GB-MONTHLY", "25gb1m", 8800, "30 days"),
                 # ─── Airtel Direct Data ───────────────────────────────
-                ("AIRTEL", "2", "300MB-2DAYS", "300mb2d", 297),
-                ("AIRTEL", "2", "500MB-WEEKLY", "500mb1w", 490),
-                ("AIRTEL", "2", "1.5GB-2DAYS", "1.5gb2d", 590),
-                ("AIRTEL", "2", "1GB-WEEKLY", "1gb1w", 780),
-                ("AIRTEL", "2", "1.5GB-WEEKLY", "1.5gb1w", 980),
-                ("AIRTEL", "2", "3.5GB-WEEKLY", "3.5gb1w", 1470),
-                ("AIRTEL", "2", "2GB-MONTHLY", "2gb1m", 1480),
-                ("AIRTEL", "2", "3GB-MONTHLY", "3gb1m", 1970),
-                ("AIRTEL", "2", "6GB-WEEKLY", "6gb1w", 2450),
-                ("AIRTEL", "2", "4GB-MONTHLY", "4gb1m", 2470),
-                ("AIRTEL", "2", "10GB-WEEKLY", "10gb1w", 2950),
-                ("AIRTEL", "2", "8GB-MONTHLY", "8gb1m", 2970),
-                ("AIRTEL", "2", "10GB-MONTHLY", "10gb1m", 3930),
-                ("AIRTEL", "2", "15GB-WEEKLY", "15gb1w", 4870),
-                ("AIRTEL", "2", "13GB-MONTHLY", "13gb1m", 4900),
-                ("AIRTEL", "2", "18GB-MONTHLY", "18gb1m", 5880),
-                ("AIRTEL", "2", "25GB-MONTHLY", "25gb1m", 7830),
-                ("AIRTEL", "2", "35GB-MONTHLY", "35gb1m", 9770),
+                ("AIRTEL", "2", "300MB-2DAYS", "300mb2d", 297, "2 days"),
+                ("AIRTEL", "2", "500MB-WEEKLY", "500mb1w", 490, "7 days"),
+                ("AIRTEL", "2", "1.5GB-2DAYS", "1.5gb2d", 590, "2 days"),
+                ("AIRTEL", "2", "1GB-WEEKLY", "1gb1w", 780, "7 days"),
+                ("AIRTEL", "2", "1.5GB-WEEKLY", "1.5gb1w", 980, "7 days"),
+                ("AIRTEL", "2", "3.5GB-WEEKLY", "3.5gb1w", 1470, "7 days"),
+                ("AIRTEL", "2", "2GB-MONTHLY", "2gb1m", 1480, "30 days"),
+                ("AIRTEL", "2", "3GB-MONTHLY", "3gb1m", 1970, "30 days"),
+                ("AIRTEL", "2", "6GB-WEEKLY", "6gb1w", 2450, "7 days"),
+                ("AIRTEL", "2", "4GB-MONTHLY", "4gb1m", 2470, "30 days"),
+                ("AIRTEL", "2", "10GB-WEEKLY", "10gb1w", 2950, "7 days"),
+                ("AIRTEL", "2", "8GB-MONTHLY", "8gb1m", 2970, "30 days"),
+                ("AIRTEL", "2", "10GB-MONTHLY", "10gb1m", 3930, "30 days"),
+                ("AIRTEL", "2", "15GB-WEEKLY", "15gb1w", 4870, "7 days"),
+                ("AIRTEL", "2", "13GB-MONTHLY", "13gb1m", 4900, "30 days"),
+                ("AIRTEL", "2", "18GB-MONTHLY", "18gb1m", 5880, "30 days"),
+                ("AIRTEL", "2", "25GB-MONTHLY", "25gb1m", 7830, "30 days"),
+                ("AIRTEL", "2", "35GB-MONTHLY", "35gb1m", 9770, "30 days"),
                 # ─── GLO CG Data — 30 days ───────────────────────────
-                ("GLO", "3", "500MB-MONTHLY", "500MB", 280),
-                ("GLO", "3", "1GB-MONTHLY", "1GB", 480),
-                ("GLO", "3", "2GB-MONTHLY", "2GB", 960),
-                ("GLO", "3", "3GB-MONTHLY", "3GB", 1440),
-                ("GLO", "3", "5GB-MONTHLY", "5GB", 2400),
-                ("GLO", "3", "10GB-MONTHLY", "10GB", 4800),
+                ("GLO", "3", "500MB-MONTHLY", "500MB", 280, "30 days"),
+                ("GLO", "3", "1GB-MONTHLY", "1GB", 480, "30 days"),
+                ("GLO", "3", "2GB-MONTHLY", "2GB", 960, "30 days"),
+                ("GLO", "3", "3GB-MONTHLY", "3GB", 1440, "30 days"),
+                ("GLO", "3", "5GB-MONTHLY", "5GB", 2400, "30 days"),
+                ("GLO", "3", "10GB-MONTHLY", "10GB", 4800, "30 days"),
             ]
-            for network, network_id, size, plan_id, cost_price in default_plans:
+            for network, network_id, size, plan_id, cost_price, duration in default_plans:
                 selling_price = calculate_selling_price(cost_price)
                 await db.execute(
-                    "INSERT INTO data_plans (network, network_id, size, plan_id, cost_price, price) VALUES (?, ?, ?, ?, ?, ?)",
-                    (network, network_id, size, plan_id, cost_price, selling_price)
+                    "INSERT INTO data_plans (network, network_id, size, plan_id, cost_price, price, duration) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (network, network_id, size, plan_id, cost_price, selling_price, duration)
                 )
             await db.commit()
 
@@ -376,7 +390,7 @@ async def get_plan(network: str, size: str) -> Optional[Dict[str, Any]]:
         await db.close()
 
 
-async def add_or_update_plan(network: str, network_id: str, size: str, plan_id: str, cost_price: float) -> None:
+async def add_or_update_plan(network: str, network_id: str, size: str, plan_id: str, cost_price: float, duration: str = "30 days") -> None:
     """Add a new data plan or update an existing one. Price is auto-calculated with 2% markup."""
     network = network.upper().strip()
     size = size.upper().strip().replace(" ", "")
@@ -384,14 +398,15 @@ async def add_or_update_plan(network: str, network_id: str, size: str, plan_id: 
     db = await _get_db()
     try:
         await db.execute(
-            """INSERT INTO data_plans (network, network_id, size, plan_id, cost_price, price)
-               VALUES (?, ?, ?, ?, ?, ?)
+            """INSERT INTO data_plans (network, network_id, size, plan_id, cost_price, price, duration)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(network, size) DO UPDATE SET
                network_id=excluded.network_id,
                plan_id=excluded.plan_id,
                cost_price=excluded.cost_price,
-               price=excluded.price""",
-            (network, network_id, size, plan_id, cost_price, selling_price)
+               price=excluded.price,
+               duration=excluded.duration""",
+            (network, network_id, size, plan_id, cost_price, selling_price, duration)
         )
         await db.commit()
     finally:

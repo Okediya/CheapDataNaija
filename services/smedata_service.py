@@ -28,7 +28,10 @@ async def get_prices(network: str = None) -> dict:
         net = p["network"]
         if net not in prices_dict:
             prices_dict[net] = {}
-        prices_dict[net][p["size"]] = p["price"]
+        prices_dict[net][p["size"]] = {
+            "price": p["price"],
+            "duration": p.get("duration", "30 days")
+        }
         
     if network:
         network = network.upper().strip()
