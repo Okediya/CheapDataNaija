@@ -78,7 +78,7 @@ async def buy_data(network: str, size: str, phone: str) -> dict:
         "token": SMEDATA_TOKEN,
         "network": network_id,
         "phone": phone,
-        "plan": plan_id,
+        "size": plan_id,
     }
 
     try:
