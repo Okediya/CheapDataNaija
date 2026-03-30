@@ -7,7 +7,7 @@ import json
 import logging
 import itertools
 import asyncio
-from groq import AsyncGroq
+from groq import AsyncGroq, RateLimitError, APIStatusError, AuthenticationError
 from config import GROQ_API_KEYS
 from services import wallet_service, smedata_service, paystack_service
 from database import get_orders, get_or_create_user
@@ -50,13 +50,14 @@ class GroqKeyPool:
 
     @staticmethod
     def _is_rate_limit_error(e: Exception) -> bool:
-        """Check if an exception is a rate limit / resource exhausted error."""
-        err_str = str(e).lower()
-        return any(term in err_str for term in [
-            "rate_limit", "429", "resource_exhausted",
-            "tokens per minute", "requests per minute",
-            "rate limit", "too many requests"
-        ])
+        """Check if an exception is a rate limit error using Groq's exception types."""
+        # Use the actual Groq RateLimitError type (most reliable)
+        if isinstance(e, RateLimitError):
+            return True
+        # Also check for APIStatusError with 429 status code
+        if isinstance(e, APIStatusError) and e.status_code == 429:
+            return True
+        return False
 
     async def chat_completion(self, **kwargs):
         """Make a chat completion request, rotating keys on rate limit errors.
@@ -90,6 +91,7 @@ class GroqKeyPool:
                         last_error = e
                         continue
                     else:
+                        logger.error(f"Non-rate-limit Groq error on {key_label}: {type(e).__name__}: {e}")
                         raise  # Non-rate-limit error, fail immediately
 
         # All cycles exhausted
@@ -397,6 +399,8 @@ async def process_message(telegram_id: int, user_text: str) -> str:
                     tools=tools,
                     tool_choice="auto"
                 )
+            except RateLimitExhaustedError:
+                raise  # Let this propagate to the outer handler
             except Exception as api_err:
                 from groq import BadRequestError
                 if isinstance(api_err, BadRequestError) and "tool_use_failed" in str(api_err):
@@ -429,7 +433,12 @@ async def process_message(telegram_id: int, user_text: str) -> str:
                         })
                         continue
                     else:
+                        # Max retries exhausted for tool_use_failed — reset conversation
+                        logger.error(f"Tool use failed {MAX_RETRIES} times for user {telegram_id}. Resetting conversation.")
+                        _conversations[telegram_id] = [{"role": "system", "content": SYSTEM_PROMPT}]
                         raise
+                # Log the actual error type for debugging
+                logger.error(f"Groq API error for user {telegram_id}: {type(api_err).__name__}: {api_err}")
                 raise api_err
             
             response_msg = response.choices[0].message
@@ -443,7 +452,7 @@ async def process_message(telegram_id: int, user_text: str) -> str:
                     "tool_calls": [tool_call.model_dump() for tool_call in response_msg.tool_calls]
                 })
                 
-                # Execute all tools in parallel (or sequential)
+                # Execute all tools
                 for tool_call in response_msg.tool_calls:
                     fn_name = tool_call.function.name
                     try:
@@ -481,7 +490,7 @@ async def process_message(telegram_id: int, user_text: str) -> str:
         return reply_text.strip() if reply_text.strip() else "I'm sorry, I could not process that request. Please try again."
 
     except RateLimitExhaustedError:
-        # Specific message for rate limits — user can try again soon
+        # Specific message for ACTUAL rate limits only
         if history and history[-1].get("role") == "user":
             history.pop()
         logger.warning(f"Rate limit exhausted for user {telegram_id}")
@@ -490,10 +499,15 @@ async def process_message(telegram_id: int, user_text: str) -> str:
             "Please wait about 30 seconds and try again!"
         )
     except Exception as e:
-        # If an error occurs, pop the user message to prevent getting stuck
-        if history and history[-1].get("role") == "user":
+        # Clean up conversation history to prevent getting stuck in a bad state
+        # Pop the user message and any broken tool/assistant messages
+        while history and history[-1].get("role") in ("user", "tool", "system"):
             history.pop()
-        logger.error(f"Groq processing error for user {telegram_id}: {e}", exc_info=True)
+        # If history ends with a broken assistant message (tool_calls but no results), pop it too
+        if history and history[-1].get("role") == "assistant" and history[-1].get("tool_calls"):
+            history.pop()
+
+        logger.error(f"Groq error for user {telegram_id} [{type(e).__name__}]: {e}", exc_info=True)
         return (
             "I apologize, but I encountered an error processing your request. "
             "Please try again or use /menu for quick options."
