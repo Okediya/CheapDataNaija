@@ -137,16 +137,16 @@ async def handle_health(request: web.Request) -> web.Response:
 # ─── Keep-Alive (prevents Render free tier spin-down) ────────────────────────
 
 async def keep_alive(app: web.Application):
-    """Ping own health endpoint every 10 minutes to prevent Render free tier spin-down."""
+    """Ping own health endpoint every 5 minutes to prevent Render free tier spin-down."""
     import httpx
     render_url = os.getenv("RENDER_EXTERNAL_URL")
     if not render_url:
         logger.info("No RENDER_EXTERNAL_URL set — keep-alive disabled (local dev).")
         return
     health_url = f"{render_url}/health"
-    logger.info(f"Keep-alive started: pinging {health_url} every 10 minutes.")
+    logger.info(f"Keep-alive started: pinging {health_url} every 5 minutes.")
     while True:
-        await asyncio.sleep(600)  # 10 minutes
+        await asyncio.sleep(300)  # 5 minutes
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.get(health_url)
@@ -163,7 +163,9 @@ async def on_startup(app: web.Application):
     logger.info("Database initialized.")
 
     # Set webhook
-    await bot.set_webhook(WEBHOOK_URL, drop_pending_updates=True)
+    # drop_pending_updates=False ensures messages sent while the service was
+    # spun down (Render free tier) are NOT lost when the service wakes up.
+    await bot.set_webhook(WEBHOOK_URL, drop_pending_updates=False)
     logger.info(f"Webhook set to: {WEBHOOK_URL}")
 
     # Start keep-alive background task
