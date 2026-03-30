@@ -1,31 +1,41 @@
 """
 CheapDataNaija Bot — Telegram Handlers
 Aiogram 3.x routers for commands, messages, and callback queries.
+All menu buttons work directly without AI — AI is only used for free-text chat.
 """
 
 import re
+import json
 import logging
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command, CommandStart
 from services.llm_service import process_message
-from database import get_or_create_user, get_all_plans, add_or_update_plan, delete_plan, get_profit_stats
+from services import wallet_service, smedata_service, paystack_service
+from database import (
+    get_or_create_user, get_all_plans, get_orders, get_transactions,
+    add_or_update_plan, delete_plan, get_profit_stats
+)
 from config import ADMIN_TELEGRAM_ID
 
 logger = logging.getLogger(__name__)
+
 
 def is_admin(user_id: int) -> bool:
     """Check if the user is authorized as an admin."""
     return str(user_id).strip() == str(ADMIN_TELEGRAM_ID).strip()
 
+
 router = Router()
 
+# ─── In-Memory State for Buy Data Flow ───────────────────────────────────────
+# Tracks users who are in the middle of a purchase (waiting for phone number)
+_buy_states: dict[int, dict] = {}
 
 # ─── Markdown Safety Helpers ─────────────────────────────────────────────────
 
 def _escape_markdown(text: str) -> str:
     """Escape special Markdown characters for Telegram."""
-    # Telegram Markdown v1 special chars: _ * ` [
     escape_chars = r'_*`['
     return re.sub(r'([' + re.escape(escape_chars) + r'])', r'\\\1', text)
 
@@ -63,7 +73,15 @@ async def safe_edit(callback_message: Message, text: str, reply_markup=None):
                 reply_markup=reply_markup
             )
 
-# ─── Inline Keyboard Menu ────────────────────────────────────────────────────
+
+def _back_button():
+    """Inline keyboard with just a Back to Menu button."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Back to Menu", callback_data="menu_main")]
+    ])
+
+
+# ─── Inline Keyboard Menus ───────────────────────────────────────────────────
 
 def get_main_menu() -> InlineKeyboardMarkup:
     """Build the main inline keyboard menu."""
@@ -87,16 +105,50 @@ def get_network_menu() -> InlineKeyboardMarkup:
     """Menu for selecting a network."""
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="🟡 MTN", callback_data="net_mtn"),
-            InlineKeyboardButton(text="🔴 Airtel", callback_data="net_airtel"),
+            InlineKeyboardButton(text="🟡 MTN", callback_data="net_MTN"),
+            InlineKeyboardButton(text="🔴 Airtel", callback_data="net_AIRTEL"),
         ],
         [
-            InlineKeyboardButton(text="🟢 Glo", callback_data="net_glo"),
+            InlineKeyboardButton(text="🟢 Glo", callback_data="net_GLO"),
         ],
         [
             InlineKeyboardButton(text="⬅️ Back to Menu", callback_data="menu_main"),
         ],
     ])
+
+
+def get_funding_menu() -> InlineKeyboardMarkup:
+    """Preset funding amount buttons."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="₦500", callback_data="fund_500"),
+            InlineKeyboardButton(text="₦1,000", callback_data="fund_1000"),
+        ],
+        [
+            InlineKeyboardButton(text="₦2,000", callback_data="fund_2000"),
+            InlineKeyboardButton(text="₦5,000", callback_data="fund_5000"),
+        ],
+        [
+            InlineKeyboardButton(text="₦10,000", callback_data="fund_10000"),
+            InlineKeyboardButton(text="💬 Custom Amount", callback_data="fund_custom"),
+        ],
+        [
+            InlineKeyboardButton(text="⬅️ Back to Menu", callback_data="menu_main"),
+        ],
+    ])
+
+
+def _parse_duration(size_name: str) -> str:
+    """Parse validity duration from the plan size name."""
+    s = size_name.upper()
+    if s.endswith("-DAILY"):
+        return "1 day"
+    elif "-2DAYS" in s:
+        return "2 days"
+    elif s.endswith("-WEEKLY"):
+        return "7 days"
+    else:
+        return "30 days"
 
 
 # ─── Command Handlers ────────────────────────────────────────────────────────
@@ -127,6 +179,8 @@ async def cmd_start(message: Message):
 @router.message(Command("menu"))
 async def cmd_menu(message: Message):
     """Show the inline menu."""
+    # Clear any pending buy state
+    _buy_states.pop(message.from_user.id, None)
     await message.answer(
         "📱 **CheapDataNaija Menu**\n\nSelect an option below:",
         parse_mode="Markdown",
@@ -136,30 +190,44 @@ async def cmd_menu(message: Message):
 
 @router.message(Command("balance"))
 async def cmd_balance(message: Message):
-    """Quick balance check."""
-    response = await process_message(message.from_user.id, "Check my wallet balance")
-    await safe_reply(message, response)
+    """Quick balance check — direct, no AI."""
+    balance = await wallet_service.check_balance(message.from_user.id)
+    await safe_reply(
+        message,
+        f"💰 **Your Wallet Balance**\n\n"
+        f"Balance: **₦{balance:,.2f}**\n\n"
+        f"Use 💳 Fund Wallet to top up!",
+        reply_markup=_back_button()
+    )
 
 
 @router.message(Command("prices"))
 async def cmd_prices(message: Message):
-    """Show data prices."""
-    response = await process_message(message.from_user.id, "Show me all data prices")
-    await safe_reply(message, response)
+    """Show data prices — direct, no AI."""
+    prices = await smedata_service.get_prices()
+    text = _format_prices(prices)
+    await safe_reply(message, text, reply_markup=_back_button())
 
 
 @router.message(Command("fund"))
 async def cmd_fund(message: Message):
-    """Start wallet funding."""
-    response = await process_message(message.from_user.id, "I want to fund my wallet")
-    await safe_reply(message, response)
+    """Start wallet funding — show amount options."""
+    balance = await wallet_service.check_balance(message.from_user.id)
+    await safe_reply(
+        message,
+        f"💳 **Fund Your Wallet**\n\n"
+        f"Current Balance: **₦{balance:,.2f}**\n\n"
+        f"Select an amount to add:",
+        reply_markup=get_funding_menu()
+    )
 
 
 @router.message(Command("orders"))
 async def cmd_orders(message: Message):
-    """Show order history."""
-    response = await process_message(message.from_user.id, "Show my order history")
-    await safe_reply(message, response)
+    """Show order history — direct, no AI."""
+    orders = await get_orders(message.from_user.id, limit=10)
+    text = _format_orders(orders)
+    await safe_reply(message, text, reply_markup=_back_button())
 
 
 @router.message(Command("help"))
@@ -183,6 +251,83 @@ async def cmd_help(message: Message):
         "I understand natural language, so just tell me what you need!"
     )
     await message.answer(help_text, parse_mode="Markdown")
+
+
+# ─── Formatting Helpers ──────────────────────────────────────────────────────
+
+def _format_prices(prices: dict) -> str:
+    """Format prices dict into a Telegram-friendly message."""
+    if not prices:
+        return "📋 No data plans available at the moment. Please try again later."
+
+    text = "📋 **Data Prices**\n\n"
+
+    network_emojis = {"MTN": "🟡", "AIRTEL": "🔴", "GLO": "🟢"}
+
+    for network, plans in sorted(prices.items()):
+        emoji = network_emojis.get(network, "📱")
+        text += f"{emoji} **{network}**\n"
+        # Sort plans by price
+        sorted_plans = sorted(plans.items(), key=lambda x: x[1])
+        for size, price in sorted_plans:
+            duration = _parse_duration(size)
+            # Clean up size display
+            display_size = size.replace("-", " ").replace("SME MONTHLY", "(SME) 30 days")
+            text += f"  • {display_size} — **₦{price:,.0f}** ({duration})\n"
+        text += "\n"
+
+    text += "_Use 📦 Buy Data to purchase!_"
+    return text
+
+
+def _format_orders(orders: list) -> str:
+    """Format orders list into a Telegram-friendly message."""
+    if not orders:
+        return (
+            "📜 **My Orders**\n\n"
+            "You have no orders yet.\n\n"
+            "Use 📦 Buy Data to make your first purchase!"
+        )
+
+    text = "📜 **My Orders** (Recent)\n\n"
+    status_emoji = {
+        "completed": "✅",
+        "processing": "⏳",
+        "pending": "🔄",
+        "failed": "❌"
+    }
+
+    for o in orders:
+        emoji = status_emoji.get(o.get("status", ""), "❓")
+        text += (
+            f"{emoji} **{o['network']} {o['size']}**\n"
+            f"   Phone: {o['phone']} | ₦{o['amount']:,.0f}\n"
+            f"   {o.get('created_at', 'N/A')}\n\n"
+        )
+
+    return text
+
+
+def _format_transactions(transactions: list) -> str:
+    """Format wallet transactions into a Telegram-friendly message."""
+    if not transactions:
+        return (
+            "📊 **Wallet History**\n\n"
+            "No transactions yet.\n\n"
+            "Use 💳 Fund Wallet to get started!"
+        )
+
+    text = "📊 **Wallet History** (Recent)\n\n"
+    for tx in transactions:
+        emoji = "💚" if tx.get("type") == "credit" else "🔴"
+        sign = "+" if tx.get("type") == "credit" else "-"
+        text += (
+            f"{emoji} {sign}₦{tx['amount']:,.2f}\n"
+            f"   {tx.get('description', 'N/A')}\n"
+            f"   {tx.get('created_at', 'N/A')}\n\n"
+        )
+
+    return text
 
 
 # ─── Admin Command Handlers ──────────────────────────────────────────────────
@@ -259,7 +404,7 @@ async def cmd_syncsetup(message: Message):
     for net, nid, size, pid, cost in full_plans:
         await add_or_update_plan(net, nid, size, pid, cost)
         
-    await message.answer(f"✅ Database synchronized with **{len(full_plans)} plans**! All SMEDATA plans with correct prices + 10% markup injected.", parse_mode="Markdown")
+    await message.answer(f"✅ Database synchronized with **{len(full_plans)} plans**! All SMEDATA plans with correct prices + 2% markup injected.", parse_mode="Markdown")
 
 @router.message(Command("myid"))
 async def cmd_myid(message: Message):
@@ -367,11 +512,13 @@ async def cmd_gains(message: Message):
     await message.answer(report, parse_mode="Markdown")
 
 
-# ─── Callback Query Handlers (Menu Buttons) ──────────────────────────────────
+# ─── Callback Query Handlers (Menu Buttons — Direct, No AI) ──────────────────
 
 @router.callback_query(F.data == "menu_main")
 async def cb_main_menu(callback: CallbackQuery):
     """Return to main menu."""
+    # Clear any pending buy state
+    _buy_states.pop(callback.from_user.id, None)
     await callback.message.edit_text(
         "📱 **CheapDataNaija Menu**\n\nSelect an option below:",
         parse_mode="Markdown",
@@ -380,9 +527,155 @@ async def cb_main_menu(callback: CallbackQuery):
     await callback.answer()
 
 
+# ── Check Balance (Direct) ───────────────────────────────────────────────────
+
+@router.callback_query(F.data == "menu_balance")
+async def cb_balance(callback: CallbackQuery):
+    """Check wallet balance — directly from database."""
+    try:
+        balance = await wallet_service.check_balance(callback.from_user.id)
+        await safe_edit(
+            callback.message,
+            f"💰 **Your Wallet Balance**\n\n"
+            f"Balance: **₦{balance:,.2f}**\n\n"
+            f"Use 💳 Fund Wallet to top up!",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="💳 Fund Wallet", callback_data="menu_fund")],
+                [InlineKeyboardButton(text="⬅️ Back to Menu", callback_data="menu_main")],
+            ])
+        )
+    except Exception as e:
+        logger.error(f"Balance check error: {e}", exc_info=True)
+        await safe_edit(callback.message, "❌ Error checking balance. Please try again.", reply_markup=_back_button())
+    await callback.answer()
+
+
+# ── Data Prices (Direct) ─────────────────────────────────────────────────────
+
+@router.callback_query(F.data == "menu_prices")
+async def cb_prices(callback: CallbackQuery):
+    """Show all data prices — directly from database."""
+    try:
+        prices = await smedata_service.get_prices()
+        text = _format_prices(prices)
+        await safe_edit(callback.message, text, reply_markup=_back_button())
+    except Exception as e:
+        logger.error(f"Prices error: {e}", exc_info=True)
+        await safe_edit(callback.message, "❌ Error loading prices. Please try again.", reply_markup=_back_button())
+    await callback.answer()
+
+
+# ── My Orders (Direct) ───────────────────────────────────────────────────────
+
+@router.callback_query(F.data == "menu_orders")
+async def cb_orders(callback: CallbackQuery):
+    """Show order history — directly from database."""
+    try:
+        orders = await get_orders(callback.from_user.id, limit=10)
+        text = _format_orders(orders)
+        await safe_edit(callback.message, text, reply_markup=_back_button())
+    except Exception as e:
+        logger.error(f"Orders error: {e}", exc_info=True)
+        await safe_edit(callback.message, "❌ Error loading orders. Please try again.", reply_markup=_back_button())
+    await callback.answer()
+
+
+# ── Wallet History (Direct) ──────────────────────────────────────────────────
+
+@router.callback_query(F.data == "menu_history")
+async def cb_history(callback: CallbackQuery):
+    """Show wallet transaction history — directly from database."""
+    try:
+        transactions = await wallet_service.get_wallet_history(callback.from_user.id, limit=10)
+        text = _format_transactions(transactions)
+        await safe_edit(callback.message, text, reply_markup=_back_button())
+    except Exception as e:
+        logger.error(f"Wallet history error: {e}", exc_info=True)
+        await safe_edit(callback.message, "❌ Error loading wallet history. Please try again.", reply_markup=_back_button())
+    await callback.answer()
+
+
+# ── Fund Wallet (Direct — Preset Amounts) ────────────────────────────────────
+
+@router.callback_query(F.data == "menu_fund")
+async def cb_fund(callback: CallbackQuery):
+    """Show funding amount options."""
+    try:
+        balance = await wallet_service.check_balance(callback.from_user.id)
+        await safe_edit(
+            callback.message,
+            f"💳 **Fund Your Wallet**\n\n"
+            f"Current Balance: **₦{balance:,.2f}**\n\n"
+            f"Select an amount to fund:",
+            reply_markup=get_funding_menu()
+        )
+    except Exception as e:
+        logger.error(f"Fund menu error: {e}", exc_info=True)
+        await safe_edit(callback.message, "❌ Error loading. Please try again.", reply_markup=_back_button())
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("fund_"))
+async def cb_fund_amount(callback: CallbackQuery):
+    """Handle funding amount selection — generate Paystack link directly."""
+    amount_str = callback.data.replace("fund_", "")
+
+    if amount_str == "custom":
+        # Ask user to type a custom amount
+        _buy_states[callback.from_user.id] = {"action": "fund_custom"}
+        await safe_edit(
+            callback.message,
+            "💳 **Custom Funding Amount**\n\n"
+            "Type the amount you want to fund (in Naira).\n\n"
+            "Example: `2500`",
+            reply_markup=_back_button()
+        )
+        await callback.answer()
+        return
+
+    try:
+        amount = float(amount_str)
+        if amount < 100:
+            await safe_edit(callback.message, "⚠️ Minimum funding amount is ₦100.", reply_markup=_back_button())
+            await callback.answer()
+            return
+
+        telegram_id = callback.from_user.id
+        email = f"{telegram_id}@cheapdatanaija.bot"
+
+        result = await paystack_service.initialize_transaction(
+            email=email, amount_naira=amount, telegram_id=telegram_id
+        )
+
+        if result["success"]:
+            await safe_edit(
+                callback.message,
+                f"💳 **Payment Link Generated!**\n\n"
+                f"Amount: **₦{amount:,.0f}**\n\n"
+                f"👉 [Click here to pay]({result['authorization_url']})\n\n"
+                f"Your wallet will be credited automatically after payment.\n"
+                f"Reference: `{result['reference']}`",
+                reply_markup=_back_button()
+            )
+        else:
+            await safe_edit(
+                callback.message,
+                f"❌ Payment error: {result.get('message', 'Unknown error')}\n\nPlease try again.",
+                reply_markup=_back_button()
+            )
+    except Exception as e:
+        logger.error(f"Funding error: {e}", exc_info=True)
+        await safe_edit(callback.message, "❌ Error generating payment link. Please try again.", reply_markup=_back_button())
+
+    await callback.answer()
+
+
+# ── Buy Data (Direct — Multi-Step Flow) ──────────────────────────────────────
+
 @router.callback_query(F.data == "menu_buy_data")
 async def cb_buy_data(callback: CallbackQuery):
     """Show network selection for data purchase."""
+    _buy_states.pop(callback.from_user.id, None)
     await callback.message.edit_text(
         "📦 **Buy Data Bundle**\n\nSelect your network:",
         parse_mode="Markdown",
@@ -393,88 +686,337 @@ async def cb_buy_data(callback: CallbackQuery):
 
 @router.callback_query(F.data.startswith("net_"))
 async def cb_select_network(callback: CallbackQuery):
-    """Handle network selection → show prices via AI."""
-    network_map = {"net_mtn": "MTN", "net_airtel": "Airtel", "net_glo": "Glo"}
-    network = network_map.get(callback.data, "MTN")
-    response = await process_message(
-        callback.from_user.id,
-        f"Show me {network} data prices and let me pick a plan to buy"
+    """Handle network selection → show plans for that network as buttons."""
+    network = callback.data.replace("net_", "").upper()
+
+    try:
+        prices = await smedata_service.get_prices(network)
+
+        if not prices or network not in prices:
+            await safe_edit(
+                callback.message,
+                f"❌ No plans available for {network} at the moment.",
+                reply_markup=_back_button()
+            )
+            await callback.answer()
+            return
+
+        plans = prices[network]
+        # Sort by price and create buttons (2 per row)
+        sorted_plans = sorted(plans.items(), key=lambda x: x[1])
+
+        buttons = []
+        row = []
+        for size, price in sorted_plans:
+            duration = _parse_duration(size)
+            # Clean up display
+            display = size.split("-")[0]  # e.g. "1GB" from "1GB-MONTHLY"
+            label = f"{display} ({duration}) — ₦{price:,.0f}"
+            # Callback data: buy_{NETWORK}_{SIZE}
+            cb_data = f"buy_{network}_{size}"
+            row.append(InlineKeyboardButton(text=label, callback_data=cb_data))
+            if len(row) == 2:
+                buttons.append(row)
+                row = []
+        if row:
+            buttons.append(row)
+
+        buttons.append([InlineKeyboardButton(text="⬅️ Back", callback_data="menu_buy_data")])
+
+        network_emojis = {"MTN": "🟡", "AIRTEL": "🔴", "GLO": "🟢"}
+        emoji = network_emojis.get(network, "📱")
+
+        await safe_edit(
+            callback.message,
+            f"{emoji} **{network} Data Plans**\n\n"
+            f"Select a plan to buy:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
+        )
+    except Exception as e:
+        logger.error(f"Network plans error: {e}", exc_info=True)
+        await safe_edit(callback.message, "❌ Error loading plans. Please try again.", reply_markup=_back_button())
+
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("buy_"))
+async def cb_select_plan(callback: CallbackQuery):
+    """Handle plan selection → ask for phone number."""
+    parts = callback.data.split("_", 2)  # buy_NETWORK_SIZE
+    if len(parts) < 3:
+        await callback.answer("Invalid selection", show_alert=True)
+        return
+
+    network = parts[1]
+    size = parts[2]
+
+    try:
+        plan = await smedata_service.get_plan_details(network, size)
+        if not plan:
+            await callback.answer("Plan not found. Please try again.", show_alert=True)
+            return
+
+        price = plan["price"]
+        duration = _parse_duration(size)
+
+        # Save state — waiting for phone number
+        _buy_states[callback.from_user.id] = {
+            "action": "awaiting_phone",
+            "network": network,
+            "size": size,
+            "price": price,
+            "duration": duration,
+        }
+
+        await safe_edit(
+            callback.message,
+            f"📦 **Enter Phone Number**\n\n"
+            f"Plan: **{size.split('-')[0]} {network}** ({duration})\n"
+            f"Price: **₦{price:,.0f}**\n\n"
+            f"📱 Type the 11-digit phone number to receive the data:\n\n"
+            f"Example: `08012345678`",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="❌ Cancel", callback_data="menu_main")],
+            ])
+        )
+    except Exception as e:
+        logger.error(f"Plan selection error: {e}", exc_info=True)
+        await safe_edit(callback.message, "❌ Error. Please try again.", reply_markup=_back_button())
+
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("confirm_buy_"))
+async def cb_confirm_purchase(callback: CallbackQuery):
+    """Execute the purchase after confirmation."""
+    user_id = callback.from_user.id
+    state = _buy_states.get(user_id)
+
+    if not state or state.get("action") != "ready_to_buy":
+        await callback.answer("Session expired. Please start over from /menu.", show_alert=True)
+        _buy_states.pop(user_id, None)
+        return
+
+    network = state["network"]
+    size = state["size"]
+    phone = state["phone"]
+    price = state["price"]
+    duration = state["duration"]
+
+    # Clear state immediately to prevent double-buy
+    _buy_states.pop(user_id, None)
+
+    try:
+        # Get plan details for cost/profit tracking
+        plan = await smedata_service.get_plan_details(network, size)
+        if not plan:
+            await safe_edit(callback.message, "❌ Plan no longer available. Please try again.", reply_markup=_back_button())
+            await callback.answer()
+            return
+
+        selling_price = plan["price"]
+        cost_price = plan["cost_price"]
+        profit = selling_price - cost_price
+
+        # Check balance
+        balance = await wallet_service.check_balance(user_id)
+        if balance < selling_price:
+            shortfall = selling_price - balance
+            await safe_edit(
+                callback.message,
+                f"❌ **Insufficient Balance**\n\n"
+                f"You need **₦{selling_price:,.0f}** but only have **₦{balance:,.2f}**.\n"
+                f"Please fund at least **₦{shortfall:,.0f}** to your wallet first.",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="💳 Fund Wallet", callback_data="menu_fund")],
+                    [InlineKeyboardButton(text="⬅️ Back to Menu", callback_data="menu_main")],
+                ])
+            )
+            await callback.answer()
+            return
+
+        # Deduct wallet
+        try:
+            new_balance = await wallet_service.deduct_wallet(
+                user_id, selling_price,
+                f"{size} {network} data for {phone}"
+            )
+        except wallet_service.InsufficientFundsError as e:
+            await safe_edit(callback.message, f"❌ {str(e)}", reply_markup=_back_button())
+            await callback.answer()
+            return
+
+        # Record order
+        from database import insert_order, update_order_status
+        order_id = await insert_order(
+            user_id=user_id, network=network, size=size,
+            phone=phone, amount=selling_price,
+            cost_price=cost_price, profit=profit,
+            status="processing"
+        )
+
+        # Show processing message
+        await safe_edit(
+            callback.message,
+            f"⏳ **Processing your order...**\n\n"
+            f"Sending {size.split('-')[0]} {network} data to {phone}..."
+        )
+
+        # Call SMEDATA API
+        result = await smedata_service.buy_data(network, size, phone)
+
+        if result["success"]:
+            await update_order_status(order_id, "completed", json.dumps(result.get("details", {})))
+            await safe_edit(
+                callback.message,
+                f"✅ **Purchase Successful!**\n\n"
+                f"• **{size.split('-')[0]} {network}** data sent to **{phone}**\n"
+                f"• Validity: {duration}\n"
+                f"• Amount Charged: ₦{selling_price:,.0f}\n"
+                f"• Remaining Balance: ₦{new_balance:,.2f}\n\n"
+                f"Thank you for choosing CheapDataNaija! 🎉",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="📦 Buy More Data", callback_data="menu_buy_data")],
+                    [InlineKeyboardButton(text="⬅️ Back to Menu", callback_data="menu_main")],
+                ])
+            )
+        else:
+            # Refund on failure
+            await wallet_service.fund_wallet(user_id, selling_price, f"refund_order_{order_id}")
+            await update_order_status(order_id, "failed", json.dumps(result))
+            await safe_edit(
+                callback.message,
+                f"❌ **Purchase Failed**\n\n"
+                f"{result.get('message', 'Unknown error')}\n\n"
+                f"Your wallet has been refunded **₦{selling_price:,.0f}**.",
+                reply_markup=_back_button()
+            )
+    except Exception as e:
+        logger.error(f"Purchase execution error: {e}", exc_info=True)
+        await safe_edit(
+            callback.message,
+            "❌ An error occurred during purchase. If you were charged, your wallet will be refunded.",
+            reply_markup=_back_button()
+        )
+
+    await callback.answer()
+
+
+@router.callback_query(F.data == "cancel_buy")
+async def cb_cancel_buy(callback: CallbackQuery):
+    """Cancel the buy flow."""
+    _buy_states.pop(callback.from_user.id, None)
+    await callback.message.edit_text(
+        "📱 **CheapDataNaija Menu**\n\nSelect an option below:",
+        parse_mode="Markdown",
+        reply_markup=get_main_menu()
     )
-    await safe_edit(callback.message, response)
     await callback.answer()
 
 
-@router.callback_query(F.data == "menu_balance")
-async def cb_balance(callback: CallbackQuery):
-    """Check wallet balance."""
-    response = await process_message(callback.from_user.id, "Check my wallet balance")
-    await safe_edit(
-        callback.message, response,
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⬅️ Back to Menu", callback_data="menu_main")]
-        ])
-    )
-    await callback.answer()
-
-
-@router.callback_query(F.data == "menu_fund")
-async def cb_fund(callback: CallbackQuery):
-    """Fund wallet prompt."""
-    response = await process_message(callback.from_user.id, "I want to fund my wallet")
-    await safe_edit(callback.message, response)
-    await callback.answer()
-
-
-@router.callback_query(F.data == "menu_orders")
-async def cb_orders(callback: CallbackQuery):
-    """Show order history."""
-    response = await process_message(callback.from_user.id, "Show my recent orders")
-    await safe_edit(
-        callback.message, response,
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⬅️ Back to Menu", callback_data="menu_main")]
-        ])
-    )
-    await callback.answer()
-
-
-@router.callback_query(F.data == "menu_history")
-async def cb_history(callback: CallbackQuery):
-    """Show wallet transaction history."""
-    response = await process_message(callback.from_user.id, "Show my wallet history")
-    await safe_edit(
-        callback.message, response,
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⬅️ Back to Menu", callback_data="menu_main")]
-        ])
-    )
-    await callback.answer()
-
-
-@router.callback_query(F.data == "menu_prices")
-async def cb_prices(callback: CallbackQuery):
-    """Show all data prices."""
-    response = await process_message(callback.from_user.id, "Show me all data prices for all networks")
-    await safe_edit(
-        callback.message, response,
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⬅️ Back to Menu", callback_data="menu_main")]
-        ])
-    )
-    await callback.answer()
-
-
-# ─── General Message Handler (AI Conversation) ───────────────────────────────
+# ─── General Message Handler (AI Chat + Buy Flow Phone Input) ─────────────────
 
 @router.message(F.text)
 async def handle_message(message: Message):
-    """Handle all text messages — forward to Groq AI."""
+    """Handle all text messages — check for buy flow state first, then forward to AI."""
     user_id = message.from_user.id
     user_text = message.text.strip()
 
     if not user_text:
         return
 
+    # ── Check if user is in a buy flow (awaiting phone number) ────────────
+    state = _buy_states.get(user_id)
+
+    if state and state.get("action") == "fund_custom":
+        # User is entering a custom funding amount
+        _buy_states.pop(user_id, None)
+        try:
+            amount = float(user_text.replace(",", "").replace("₦", "").strip())
+            if amount < 100:
+                await safe_reply(message, "⚠️ Minimum funding amount is **₦100**. Please try again.", reply_markup=_back_button())
+                return
+            if amount > 1000000:
+                await safe_reply(message, "⚠️ Maximum funding amount is **₦1,000,000**.", reply_markup=_back_button())
+                return
+
+            email = f"{user_id}@cheapdatanaija.bot"
+            result = await paystack_service.initialize_transaction(
+                email=email, amount_naira=amount, telegram_id=user_id
+            )
+
+            if result["success"]:
+                await safe_reply(
+                    message,
+                    f"💳 **Payment Link Generated!**\n\n"
+                    f"Amount: **₦{amount:,.0f}**\n\n"
+                    f"👉 [Click here to pay]({result['authorization_url']})\n\n"
+                    f"Your wallet will be credited automatically after payment.\n"
+                    f"Reference: `{result['reference']}`",
+                    reply_markup=_back_button()
+                )
+            else:
+                await safe_reply(
+                    message,
+                    f"❌ Payment error: {result.get('message', 'Unknown error')}",
+                    reply_markup=_back_button()
+                )
+        except ValueError:
+            await safe_reply(message, "⚠️ Please enter a valid number. Example: `2500`", reply_markup=_back_button())
+        return
+
+    if state and state.get("action") == "awaiting_phone":
+        # User typed a phone number for buying data
+        phone = re.sub(r'[^\d]', '', user_text)  # Strip non-digits
+
+        if len(phone) != 11 or not phone.startswith("0"):
+            await safe_reply(
+                message,
+                "⚠️ Please enter a valid **11-digit phone number** starting with **0**.\n\n"
+                "Example: `08012345678`",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="❌ Cancel", callback_data="menu_main")],
+                ])
+            )
+            return
+
+        # Update state to ready for confirmation
+        network = state["network"]
+        size = state["size"]
+        price = state["price"]
+        duration = state["duration"]
+
+        _buy_states[user_id] = {
+            **state,
+            "action": "ready_to_buy",
+            "phone": phone,
+        }
+
+        # Show order summary with confirm button
+        balance = await wallet_service.check_balance(user_id)
+
+        await safe_reply(
+            message,
+            f"📋 **Order Summary**\n\n"
+            f"• Network: **{network}**\n"
+            f"• Data: **{size.split('-')[0]}**\n"
+            f"• Validity: **{duration}**\n"
+            f"• Phone: **{phone}**\n"
+            f"• Price: **₦{price:,.0f}**\n"
+            f"• Wallet Balance: **₦{balance:,.2f}**\n\n"
+            f"{'✅ Sufficient balance' if balance >= price else '❌ Insufficient balance — please fund your wallet first'}\n\n"
+            f"Tap **Confirm** to proceed:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="✅ Confirm Purchase", callback_data=f"confirm_buy_{network}_{size}")],
+                [InlineKeyboardButton(text="❌ Cancel", callback_data="menu_main")],
+            ]) if balance >= price else InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="💳 Fund Wallet", callback_data="menu_fund")],
+                [InlineKeyboardButton(text="❌ Cancel", callback_data="menu_main")],
+            ])
+        )
+        return
+
+    # ── No active flow — send to AI ──────────────────────────────────────
     logger.info(f"Message from {user_id}: {user_text[:100]}")
 
     # Send typing indicator
@@ -487,7 +1029,6 @@ async def handle_message(message: Message):
     if len(response) <= 4096:
         await safe_reply(message, response)
     else:
-        # Split into chunks
         chunks = [response[i:i+4000] for i in range(0, len(response), 4000)]
         for chunk in chunks:
             await safe_reply(message, chunk)
