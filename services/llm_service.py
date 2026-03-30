@@ -67,8 +67,8 @@ class GroqKeyPool:
          2. If ALL keys are rate-limited, wait and retry the full cycle.
          3. Up to MAX_CYCLES total attempts before giving up.
         """
-        MAX_CYCLES = 3          # retry the full key rotation up to 3 times
-        BACKOFF_SECONDS = [5, 10, 15]  # wait between cycles
+        MAX_CYCLES = 2          # try the full key rotation up to 2 times
+        BACKOFF_SECONDS = [3]    # short wait between cycles (fail fast)
         last_error = None
 
         for cycle in range(MAX_CYCLES):
@@ -495,20 +495,18 @@ async def process_message(telegram_id: int, user_text: str) -> str:
             history.pop()
         logger.warning(f"Rate limit exhausted for user {telegram_id}")
         return (
-            "⏳ Our AI is currently experiencing high demand. "
-            "Please wait about 30 seconds and try again!"
+            "⏳ Our AI assistant is busy right now.\n\n"
+            "Use /menu to buy data, check balance, and more — no AI needed!"
         )
     except Exception as e:
         # Clean up conversation history to prevent getting stuck in a bad state
-        # Pop the user message and any broken tool/assistant messages
         while history and history[-1].get("role") in ("user", "tool", "system"):
             history.pop()
-        # If history ends with a broken assistant message (tool_calls but no results), pop it too
         if history and history[-1].get("role") == "assistant" and history[-1].get("tool_calls"):
             history.pop()
 
         logger.error(f"Groq error for user {telegram_id} [{type(e).__name__}]: {e}", exc_info=True)
         return (
-            "I apologize, but I encountered an error processing your request. "
-            "Please try again or use /menu for quick options."
+            "Sorry, I couldn't process that right now.\n\n"
+            "Use /menu to buy data, check balance, fund wallet, and more!"
         )

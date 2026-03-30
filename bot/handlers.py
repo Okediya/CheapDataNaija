@@ -1025,10 +1025,15 @@ async def handle_message(message: Message):
     # Process through Groq LLM
     response = await process_message(user_id, user_text)
 
+    # Check if response is an error — attach menu keyboard so user can continue
+    is_error = response.startswith(("⏳", "Sorry,"))
+    markup = get_main_menu() if is_error else None
+
     # Send response (split if too long for Telegram's 4096 char limit)
     if len(response) <= 4096:
-        await safe_reply(message, response)
+        await safe_reply(message, response, reply_markup=markup)
     else:
         chunks = [response[i:i+4000] for i in range(0, len(response), 4000)]
-        for chunk in chunks:
-            await safe_reply(message, chunk)
+        for i, chunk in enumerate(chunks):
+            # Attach menu to last chunk only
+            await safe_reply(message, chunk, reply_markup=markup if i == len(chunks) - 1 else None)
