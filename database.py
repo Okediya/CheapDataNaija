@@ -19,7 +19,7 @@ PROFIT_MARGIN = 0.02  # 2% markup
 
 
 def calculate_selling_price(cost_price: float) -> float:
-    """Calculate selling price with 10% markup, rounded up to nearest whole number."""
+    """Calculate selling price with 2% markup, rounded up to nearest whole number."""
     return math.ceil(cost_price * (1 + PROFIT_MARGIN))
 
 
@@ -110,16 +110,16 @@ async def init_db() -> None:
         cursor = await db.execute("SELECT COUNT(*) FROM data_plans")
         count = (await cursor.fetchone())[0]
         if count == 0:
-            logger.info("Bootstrapping data_plans table with SMEDATA prices + 10% markup...")
+            logger.info("Bootstrapping data_plans table with SMEDATA prices + 2% markup...")
             # Cost prices from SMEDATA.NG (API reseller sale prices)
             # Format: (network, network_id, size, plan_id, cost_price)
             # Plan IDs match the SMEDATA API documentation exactly
             default_plans = [
                 # ─── MTN Data Share (SME) — 30 days ──────────────────
-                ("MTN", "1", "1GB-SME", "1gb", 600),
-                ("MTN", "1", "2GB-SME", "2gb", 1200),
-                ("MTN", "1", "3GB-SME", "3gb", 1800),
-                ("MTN", "1", "5GB-SME", "5gb", 3000),
+                ("MTN", "1", "1GB-SME-MONTHLY", "1gb", 600),
+                ("MTN", "1", "2GB-SME-MONTHLY", "2gb", 1200),
+                ("MTN", "1", "3GB-SME-MONTHLY", "3gb", 1800),
+                ("MTN", "1", "5GB-SME-MONTHLY", "5gb", 3000),
                 # ─── MTN Direct Data ──────────────────────────────────
                 ("MTN", "1", "230MB-DAILY", "230mb1d", 200),
                 ("MTN", "1", "1GB-DAILY", "1gb1d", 486),
@@ -377,7 +377,7 @@ async def get_plan(network: str, size: str) -> Optional[Dict[str, Any]]:
 
 
 async def add_or_update_plan(network: str, network_id: str, size: str, plan_id: str, cost_price: float) -> None:
-    """Add a new data plan or update an existing one. Price is auto-calculated with 10% markup."""
+    """Add a new data plan or update an existing one. Price is auto-calculated with 2% markup."""
     network = network.upper().strip()
     size = size.upper().strip().replace(" ", "")
     selling_price = calculate_selling_price(cost_price)
