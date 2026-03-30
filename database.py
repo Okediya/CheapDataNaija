@@ -3,6 +3,7 @@ CheapDataNaija Bot — Database Layer
 SQLite database with aiosqlite for async operations.
 """
 
+import math
 import aiosqlite
 import logging
 from typing import Any, Dict, List, Optional
@@ -12,6 +13,14 @@ from config import DATABASE_PATH
 logger = logging.getLogger(__name__)
 
 _db_path: str = DATABASE_PATH
+
+# ─── Profit Markup ────────────────────────────────────────────────────────────
+PROFIT_MARGIN = 0.10  # 10% markup
+
+
+def calculate_selling_price(cost_price: float) -> float:
+    """Calculate selling price with 10% markup, rounded up to nearest whole number."""
+    return math.ceil(cost_price * (1 + PROFIT_MARGIN))
 
 
 async def _get_db():
@@ -42,6 +51,8 @@ async def init_db() -> None:
                 size TEXT NOT NULL,
                 phone TEXT NOT NULL,
                 amount REAL NOT NULL,
+                cost_price REAL NOT NULL DEFAULT 0.0,
+                profit REAL NOT NULL DEFAULT 0.0,
                 status TEXT NOT NULL DEFAULT 'pending',
                 api_response TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -65,32 +76,67 @@ async def init_db() -> None:
                 network_id TEXT NOT NULL,
                 size TEXT NOT NULL,
                 plan_id TEXT NOT NULL,
+                cost_price REAL NOT NULL,
                 price REAL NOT NULL,
                 UNIQUE(network, size)
             );
 
             CREATE INDEX IF NOT EXISTS idx_orders_user ON orders(user_id);
             CREATE INDEX IF NOT EXISTS idx_transactions_user ON transactions(user_id);
+            CREATE INDEX IF NOT EXISTS idx_orders_created ON orders(created_at);
         """)
         await db.commit()
 
-        # Bootstrap current hard-coded plans ONLY if table is empty
+        # Migrate existing tables: add cost_price/profit columns if missing
+        try:
+            await db.execute("SELECT cost_price FROM orders LIMIT 1")
+        except Exception:
+            logger.info("Migrating orders table: adding cost_price and profit columns...")
+            await db.execute("ALTER TABLE orders ADD COLUMN cost_price REAL NOT NULL DEFAULT 0.0")
+            await db.execute("ALTER TABLE orders ADD COLUMN profit REAL NOT NULL DEFAULT 0.0")
+            await db.commit()
+
+        try:
+            await db.execute("SELECT cost_price FROM data_plans LIMIT 1")
+        except Exception:
+            logger.info("Migrating data_plans table: adding cost_price column...")
+            await db.execute("ALTER TABLE data_plans ADD COLUMN cost_price REAL NOT NULL DEFAULT 0.0")
+            # Copy current prices as cost_price, then update price with markup
+            await db.execute("UPDATE data_plans SET cost_price = price")
+            await db.execute(f"UPDATE data_plans SET price = CAST(cost_price * {1 + PROFIT_MARGIN} + 0.99 AS INTEGER)")
+            await db.commit()
+
+        # Bootstrap plans ONLY if table is empty
         cursor = await db.execute("SELECT COUNT(*) FROM data_plans")
         count = (await cursor.fetchone())[0]
         if count == 0:
-            logger.info("Bootstrapping data_plans table with default prices...")
+            logger.info("Bootstrapping data_plans table with SMEDATA prices + 10% markup...")
+            # Cost prices from SMEDATA.NG (reseller prices)
             default_plans = [
-                ("MTN", "1", "1GB", "1gb", 280), ("MTN", "1", "2GB", "2gb", 550),
-                ("MTN", "1", "3GB", "3gb", 800), ("MTN", "1", "5GB", "5gb", 1300), ("MTN", "1", "10GB", "10gb1m", 2500),
-                ("AIRTEL", "2", "1GB", "1gb1w", 270), ("AIRTEL", "2", "2GB", "2gb1m", 530),
-                ("AIRTEL", "2", "3GB", "3gb1m", 780), ("AIRTEL", "2", "5GB", "5gb1m", 1250),
-                ("GLO", "3", "1GB", "1GB", 260), ("GLO", "3", "2GB", "2GB", 510),
-                ("GLO", "3", "3GB", "3GB", 760), ("GLO", "3", "5GB", "5GB", 1200),
+                # (network, network_id, size, plan_id, cost_price)
+                # MTN SME Data
+                ("MTN", "1", "1GB", "1gb", 250),
+                ("MTN", "1", "2GB", "2gb", 500),
+                ("MTN", "1", "3GB", "3gb", 750),
+                ("MTN", "1", "5GB", "5gb", 1200),
+                ("MTN", "1", "10GB", "10gb1m", 2400),
+                # Airtel CG Data
+                ("AIRTEL", "2", "1GB", "1gb1w", 250),
+                ("AIRTEL", "2", "2GB", "2gb1m", 500),
+                ("AIRTEL", "2", "3GB", "3gb1m", 750),
+                ("AIRTEL", "2", "5GB", "5gb1m", 1200),
+                # GLO CG Data
+                ("GLO", "3", "1GB", "1GB", 240),
+                ("GLO", "3", "2GB", "2GB", 480),
+                ("GLO", "3", "3GB", "3GB", 720),
+                ("GLO", "3", "5GB", "5GB", 1150),
             ]
-            await db.executemany(
-                "INSERT INTO data_plans (network, network_id, size, plan_id, price) VALUES (?, ?, ?, ?, ?)",
-                default_plans
-            )
+            for network, network_id, size, plan_id, cost_price in default_plans:
+                selling_price = calculate_selling_price(cost_price)
+                await db.execute(
+                    "INSERT INTO data_plans (network, network_id, size, plan_id, cost_price, price) VALUES (?, ?, ?, ?, ?, ?)",
+                    (network, network_id, size, plan_id, cost_price, selling_price)
+                )
             await db.commit()
 
         logger.info("Database initialized successfully.")
@@ -173,6 +219,8 @@ async def insert_order(
     size: str,
     phone: str,
     amount: float,
+    cost_price: float = 0.0,
+    profit: float = 0.0,
     status: str = "pending",
     api_response: Optional[str] = None,
 ) -> int:
@@ -180,9 +228,9 @@ async def insert_order(
     db = await _get_db()
     try:
         cursor = await db.execute(
-            """INSERT INTO orders (user_id, network, size, phone, amount, status, api_response)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (user_id, network, size, phone, amount, status, api_response)
+            """INSERT INTO orders (user_id, network, size, phone, amount, cost_price, profit, status, api_response)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (user_id, network, size, phone, amount, cost_price, profit, status, api_response)
         )
         await db.commit()
         order_id = cursor.lastrowid
@@ -294,20 +342,22 @@ async def get_plan(network: str, size: str) -> Optional[Dict[str, Any]]:
         await db.close()
 
 
-async def add_or_update_plan(network: str, network_id: str, size: str, plan_id: str, price: float) -> None:
-    """Add a new data plan or completely update an existing one."""
+async def add_or_update_plan(network: str, network_id: str, size: str, plan_id: str, cost_price: float) -> None:
+    """Add a new data plan or update an existing one. Price is auto-calculated with 10% markup."""
     network = network.upper().strip()
     size = size.upper().strip().replace(" ", "")
+    selling_price = calculate_selling_price(cost_price)
     db = await _get_db()
     try:
         await db.execute(
-            """INSERT INTO data_plans (network, network_id, size, plan_id, price)
-               VALUES (?, ?, ?, ?, ?)
+            """INSERT INTO data_plans (network, network_id, size, plan_id, cost_price, price)
+               VALUES (?, ?, ?, ?, ?, ?)
                ON CONFLICT(network, size) DO UPDATE SET
                network_id=excluded.network_id,
                plan_id=excluded.plan_id,
+               cost_price=excluded.cost_price,
                price=excluded.price""",
-            (network, network_id, size, plan_id, price)
+            (network, network_id, size, plan_id, cost_price, selling_price)
         )
         await db.commit()
     finally:
@@ -329,3 +379,86 @@ async def delete_plan(network: str, size: str) -> bool:
     finally:
         await db.close()
 
+
+# ─── Profit / Gains Analytics ────────────────────────────────────────────────
+
+async def get_profit_stats() -> Dict[str, Any]:
+    """Get profit statistics: today, this week, this month, this year, and all-time.
+    Only counts completed orders.
+    """
+    db = await _get_db()
+    try:
+        stats = {}
+
+        # Today
+        cursor = await db.execute(
+            """SELECT COALESCE(SUM(profit), 0) as total_profit,
+                      COALESCE(SUM(amount), 0) as total_revenue,
+                      COALESCE(SUM(cost_price), 0) as total_cost,
+                      COUNT(*) as order_count
+               FROM orders
+               WHERE status = 'completed'
+               AND date(created_at) = date('now')"""
+        )
+        row = await cursor.fetchone()
+        stats["today"] = dict(row)
+
+        # This week (last 7 days)
+        cursor = await db.execute(
+            """SELECT COALESCE(SUM(profit), 0) as total_profit,
+                      COALESCE(SUM(amount), 0) as total_revenue,
+                      COALESCE(SUM(cost_price), 0) as total_cost,
+                      COUNT(*) as order_count
+               FROM orders
+               WHERE status = 'completed'
+               AND created_at >= datetime('now', '-7 days')"""
+        )
+        row = await cursor.fetchone()
+        stats["week"] = dict(row)
+
+        # This month
+        cursor = await db.execute(
+            """SELECT COALESCE(SUM(profit), 0) as total_profit,
+                      COALESCE(SUM(amount), 0) as total_revenue,
+                      COALESCE(SUM(cost_price), 0) as total_cost,
+                      COUNT(*) as order_count
+               FROM orders
+               WHERE status = 'completed'
+               AND strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now')"""
+        )
+        row = await cursor.fetchone()
+        stats["month"] = dict(row)
+
+        # This year
+        cursor = await db.execute(
+            """SELECT COALESCE(SUM(profit), 0) as total_profit,
+                      COALESCE(SUM(amount), 0) as total_revenue,
+                      COALESCE(SUM(cost_price), 0) as total_cost,
+                      COUNT(*) as order_count
+               FROM orders
+               WHERE status = 'completed'
+               AND strftime('%Y', created_at) = strftime('%Y', 'now')"""
+        )
+        row = await cursor.fetchone()
+        stats["year"] = dict(row)
+
+        # All time
+        cursor = await db.execute(
+            """SELECT COALESCE(SUM(profit), 0) as total_profit,
+                      COALESCE(SUM(amount), 0) as total_revenue,
+                      COALESCE(SUM(cost_price), 0) as total_cost,
+                      COUNT(*) as order_count
+               FROM orders
+               WHERE status = 'completed'"""
+        )
+        row = await cursor.fetchone()
+        stats["all_time"] = dict(row)
+
+        # Total users
+        cursor = await db.execute("SELECT COUNT(*) as count FROM users")
+        row = await cursor.fetchone()
+        stats["total_users"] = row["count"]
+
+        return stats
+    finally:
+        await db.close()

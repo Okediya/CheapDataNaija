@@ -39,11 +39,17 @@ async def get_prices(network: str = None) -> dict:
 
 
 async def get_price(network: str, size: str) -> float | None:
-    """Get the price for a specific plan. Returns None if not found."""
+    """Get the selling price for a specific plan. Returns None if not found."""
     plan = await get_plan(network, size)
     if plan:
         return plan["price"]
     return None
+
+
+async def get_plan_details(network: str, size: str) -> dict | None:
+    """Get full plan details including cost_price and selling price. Returns None if not found."""
+    plan = await get_plan(network, size)
+    return plan
 
 
 async def buy_data(network: str, size: str, phone: str) -> dict:

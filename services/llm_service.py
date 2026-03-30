@@ -170,15 +170,19 @@ async def execute_tool(function_name: str, args: dict, telegram_id: int) -> str:
             size = args.get("size", "").upper()
             phone = args.get("phone", "")
 
-            # Get price
-            price = await smedata_service.get_price(network, size)
-            if price is None:
+            # Get plan details (cost_price + selling price)
+            plan = await smedata_service.get_plan_details(network, size)
+            if plan is None:
                 return json.dumps({"success": False, "message": f"No {size} plan available for {network}."})
 
-            # Deduct wallet
+            selling_price = plan["price"]
+            cost_price = plan["cost_price"]
+            profit = selling_price - cost_price
+
+            # Deduct wallet (customer pays selling price)
             try:
                 new_balance = await wallet_service.deduct_wallet(
-                    telegram_id, price,
+                    telegram_id, selling_price,
                     f"{size} {network} data for {phone}"
                 )
             except wallet_service.InsufficientFundsError as e:
@@ -188,7 +192,9 @@ async def execute_tool(function_name: str, args: dict, telegram_id: int) -> str:
             from database import insert_order, update_order_status
             order_id = await insert_order(
                 user_id=telegram_id, network=network, size=size,
-                phone=phone, amount=price, status="processing"
+                phone=phone, amount=selling_price,
+                cost_price=cost_price, profit=profit,
+                status="processing"
             )
 
             result = await smedata_service.buy_data(network, size, phone)
@@ -198,17 +204,17 @@ async def execute_tool(function_name: str, args: dict, telegram_id: int) -> str:
                 return json.dumps({
                     "success": True,
                     "message": result["message"],
-                    "amount_charged": price,
+                    "amount_charged": selling_price,
                     "new_balance": new_balance,
                     "order_id": order_id,
                 })
             else:
                 # Refund on failure
-                await wallet_service.fund_wallet(telegram_id, price, f"refund_order_{order_id}")
+                await wallet_service.fund_wallet(telegram_id, selling_price, f"refund_order_{order_id}")
                 await update_order_status(order_id, "failed", json.dumps(result))
                 return json.dumps({
                     "success": False,
-                    "message": f"Purchase failed: {result['message']}. Your wallet has been refunded ₦{price:,.2f}.",
+                    "message": f"Purchase failed: {result['message']}. Your wallet has been refunded ₦{selling_price:,.2f}.",
                     "refunded": True,
                 })
 

@@ -9,7 +9,7 @@ from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command, CommandStart
 from services.llm_service import process_message
-from database import get_or_create_user, get_all_plans, add_or_update_plan, delete_plan
+from database import get_or_create_user, get_all_plans, add_or_update_plan, delete_plan, get_profit_stats
 from config import ADMIN_TELEGRAM_ID
 
 logger = logging.getLogger(__name__)
@@ -285,6 +285,38 @@ async def cmd_delplan(message: Message):
         await message.answer(f"🗑️ Successfully deleted the **{network.upper()} {size.upper()}** plan.", parse_mode="Markdown")
     else:
         await message.answer(f"⚠️ Plan **{network.upper()} {size.upper()}** not found.")
+
+
+@router.message(Command("gains"))
+async def cmd_gains(message: Message):
+    """Show profit/gains report for the admin."""
+    if not is_admin(message.from_user.id):
+        return
+
+    stats = await get_profit_stats()
+
+    def fmt(period: dict) -> str:
+        return (
+            f"  📈 Revenue: ₦{period['total_revenue']:,.2f}\n"
+            f"  💸 Cost: ₦{period['total_cost']:,.2f}\n"
+            f"  💰 Profit: ₦{period['total_profit']:,.2f}\n"
+            f"  🛒 Orders: {period['order_count']}"
+        )
+
+    report = (
+        "📊 **CheapDataNaija — Gains Report**\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"🗓️ **Today**\n{fmt(stats['today'])}\n\n"
+        f"📅 **This Week** (7 days)\n{fmt(stats['week'])}\n\n"
+        f"🗓️ **This Month**\n{fmt(stats['month'])}\n\n"
+        f"📆 **This Year**\n{fmt(stats['year'])}\n\n"
+        f"🏆 **All Time**\n{fmt(stats['all_time'])}\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"👥 Total Users: {stats['total_users']}"
+    )
+
+    await message.answer(report, parse_mode="Markdown")
+
 
 # ─── Callback Query Handlers (Menu Buttons) ──────────────────────────────────
 
