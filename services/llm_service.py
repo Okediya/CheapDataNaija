@@ -14,6 +14,12 @@ from database import get_orders, get_or_create_user
 
 logger = logging.getLogger(__name__)
 
+
+class RateLimitExhaustedError(Exception):
+    """Raised when all Groq API keys are rate-limited."""
+    pass
+
+
 # ─── Multi-Key Groq Client Pool ──────────────────────────────────────────────
 
 MODEL_NAME = "llama-3.3-70b-versatile"
@@ -42,39 +48,53 @@ class GroqKeyPool:
             self._current_index = idx
             return self._clients[idx], idx
 
+    @staticmethod
+    def _is_rate_limit_error(e: Exception) -> bool:
+        """Check if an exception is a rate limit / resource exhausted error."""
+        err_str = str(e).lower()
+        return any(term in err_str for term in [
+            "rate_limit", "429", "resource_exhausted",
+            "tokens per minute", "requests per minute",
+            "rate limit", "too many requests"
+        ])
+
     async def chat_completion(self, **kwargs):
         """Make a chat completion request, rotating keys on rate limit errors.
         
-        Tries each key once before giving up. On rate limit / resource exhausted,
-        automatically switches to the next key.
+        Strategy:
+         1. Try each key once (full rotation).
+         2. If ALL keys are rate-limited, wait and retry the full cycle.
+         3. Up to MAX_CYCLES total attempts before giving up.
         """
+        MAX_CYCLES = 3          # retry the full key rotation up to 3 times
+        BACKOFF_SECONDS = [5, 10, 15]  # wait between cycles
         last_error = None
-        tried = 0
 
-        while tried < self.key_count:
-            client, idx = await self.get_next_client()
-            key_label = f"key #{idx + 1}/{self.key_count}"
-            try:
-                response = await client.chat.completions.create(**kwargs)
-                return response
-            except Exception as e:
-                err_str = str(e).lower()
-                is_rate_limit = any(term in err_str for term in [
-                    "rate_limit", "429", "resource_exhausted",
-                    "tokens per minute", "requests per minute",
-                    "rate limit", "too many requests"
-                ])
-                if is_rate_limit and tried + 1 < self.key_count:
-                    tried += 1
-                    logger.warning(f"Rate limit on {key_label}, rotating to next key ({tried}/{self.key_count} tried).")
-                    last_error = e
-                    continue
-                else:
-                    raise  # Not a rate limit or all keys exhausted
+        for cycle in range(MAX_CYCLES):
+            if cycle > 0:
+                wait = BACKOFF_SECONDS[min(cycle - 1, len(BACKOFF_SECONDS) - 1)]
+                logger.info(f"All keys rate-limited. Waiting {wait}s before retry cycle {cycle + 1}/{MAX_CYCLES}...")
+                await asyncio.sleep(wait)
 
-        # All keys exhausted
-        logger.error(f"All {self.key_count} Groq keys are rate-limited.")
-        raise last_error  # type: ignore
+            tried = 0
+            while tried < self.key_count:
+                client, idx = await self.get_next_client()
+                key_label = f"key #{idx + 1}/{self.key_count}"
+                try:
+                    response = await client.chat.completions.create(**kwargs)
+                    return response
+                except Exception as e:
+                    if self._is_rate_limit_error(e):
+                        tried += 1
+                        logger.warning(f"Rate limit on {key_label} (cycle {cycle + 1}, {tried}/{self.key_count} tried).")
+                        last_error = e
+                        continue
+                    else:
+                        raise  # Non-rate-limit error, fail immediately
+
+        # All cycles exhausted
+        logger.error(f"All {self.key_count} Groq keys exhausted after {MAX_CYCLES} retry cycles.")
+        raise RateLimitExhaustedError(f"All API keys are rate-limited. Please try again in a minute.") from last_error
 
 
 # Initialize the global key pool
@@ -460,6 +480,15 @@ async def process_message(telegram_id: int, user_text: str) -> str:
 
         return reply_text.strip() if reply_text.strip() else "I'm sorry, I could not process that request. Please try again."
 
+    except RateLimitExhaustedError:
+        # Specific message for rate limits — user can try again soon
+        if history and history[-1].get("role") == "user":
+            history.pop()
+        logger.warning(f"Rate limit exhausted for user {telegram_id}")
+        return (
+            "⏳ Our AI is currently experiencing high demand. "
+            "Please wait about 30 seconds and try again!"
+        )
     except Exception as e:
         # If an error occurs, pop the user message to prevent getting stuck
         if history and history[-1].get("role") == "user":
