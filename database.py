@@ -80,12 +80,12 @@ async def init_db() -> None:
         if count == 0:
             logger.info("Bootstrapping data_plans table with default prices...")
             default_plans = [
-                ("MTN", "1", "1GB", "1", 280), ("MTN", "1", "2GB", "2", 550),
-                ("MTN", "1", "3GB", "3", 800), ("MTN", "1", "5GB", "5", 1300), ("MTN", "1", "10GB", "10", 2500),
-                ("AIRTEL", "2", "1GB", "1", 270), ("AIRTEL", "2", "2GB", "2", 530),
-                ("AIRTEL", "2", "3GB", "3", 780), ("AIRTEL", "2", "5GB", "5", 1250),
-                ("GLO", "3", "1GB", "1", 260), ("GLO", "3", "2GB", "2", 510),
-                ("GLO", "3", "3GB", "3", 760), ("GLO", "3", "5GB", "5", 1200),
+                ("MTN", "1", "1GB", "1gb", 280), ("MTN", "1", "2GB", "2gb", 550),
+                ("MTN", "1", "3GB", "3gb", 800), ("MTN", "1", "5GB", "5gb", 1300), ("MTN", "1", "10GB", "10gb1m", 2500),
+                ("AIRTEL", "2", "1GB", "1gb1w", 270), ("AIRTEL", "2", "2GB", "2gb1m", 530),
+                ("AIRTEL", "2", "3GB", "3gb1m", 780), ("AIRTEL", "2", "5GB", "5gb1m", 1250),
+                ("GLO", "3", "1GB", "1GB", 260), ("GLO", "3", "2GB", "2GB", 510),
+                ("GLO", "3", "3GB", "3GB", 760), ("GLO", "3", "5GB", "5GB", 1200),
             ]
             await db.executemany(
                 "INSERT INTO data_plans (network, network_id, size, plan_id, price) VALUES (?, ?, ?, ?, ?)",
