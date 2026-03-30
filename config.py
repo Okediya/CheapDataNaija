@@ -12,8 +12,9 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 ADMIN_TELEGRAM_ID = os.getenv("ADMIN_TELEGRAM_ID", "")
 
-# Groq Llama 3.3
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+# Groq Llama 3.3 (supports multiple comma-separated keys for rotation)
+_groq_keys_raw = os.getenv("GROQ_API_KEY", "")
+GROQ_API_KEYS = [k.strip() for k in _groq_keys_raw.split(",") if k.strip()]
 
 # Paystack
 PAYSTACK_SECRET_KEY = os.getenv("PAYSTACK_SECRET_KEY", "")

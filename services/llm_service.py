@@ -1,21 +1,84 @@
 """
 CheapDataNaija Bot — LLM Service (Groq API)
 Conversational AI engine with tool-calling for data purchases, wallet management, etc.
-Uses Groq's Llama 3.3.
-"""
+Uses Groq's Llama 3.3 with multi-key rotation to avoid rate limits."""
 
 import json
 import logging
+import itertools
+import asyncio
 from groq import AsyncGroq
-from config import GROQ_API_KEY
+from config import GROQ_API_KEYS
 from services import wallet_service, smedata_service, paystack_service
 from database import get_orders, get_or_create_user
 
 logger = logging.getLogger(__name__)
 
-# Configure Groq client
-client = AsyncGroq(api_key=GROQ_API_KEY)
+# ─── Multi-Key Groq Client Pool ──────────────────────────────────────────────
+
 MODEL_NAME = "llama-3.3-70b-versatile"
+
+class GroqKeyPool:
+    """Round-robin Groq API key rotator with automatic failover on rate limits."""
+
+    def __init__(self, api_keys: list[str]):
+        if not api_keys:
+            raise ValueError("At least one GROQ_API_KEY must be set in .env")
+        self._keys = api_keys
+        self._clients = [AsyncGroq(api_key=k) for k in api_keys]
+        self._cycle = itertools.cycle(range(len(self._clients)))
+        self._lock = asyncio.Lock()
+        self._current_index = 0
+        logger.info(f"Groq key pool initialized with {len(self._keys)} key(s).")
+
+    @property
+    def key_count(self) -> int:
+        return len(self._keys)
+
+    async def get_next_client(self) -> tuple[AsyncGroq, int]:
+        """Get the next client in round-robin order. Returns (client, index)."""
+        async with self._lock:
+            idx = next(self._cycle)
+            self._current_index = idx
+            return self._clients[idx], idx
+
+    async def chat_completion(self, **kwargs):
+        """Make a chat completion request, rotating keys on rate limit errors.
+        
+        Tries each key once before giving up. On rate limit / resource exhausted,
+        automatically switches to the next key.
+        """
+        last_error = None
+        tried = 0
+
+        while tried < self.key_count:
+            client, idx = await self.get_next_client()
+            key_label = f"key #{idx + 1}/{self.key_count}"
+            try:
+                response = await client.chat.completions.create(**kwargs)
+                return response
+            except Exception as e:
+                err_str = str(e).lower()
+                is_rate_limit = any(term in err_str for term in [
+                    "rate_limit", "429", "resource_exhausted",
+                    "tokens per minute", "requests per minute",
+                    "rate limit", "too many requests"
+                ])
+                if is_rate_limit and tried + 1 < self.key_count:
+                    tried += 1
+                    logger.warning(f"Rate limit on {key_label}, rotating to next key ({tried}/{self.key_count} tried).")
+                    last_error = e
+                    continue
+                else:
+                    raise  # Not a rate limit or all keys exhausted
+
+        # All keys exhausted
+        logger.error(f"All {self.key_count} Groq keys are rate-limited.")
+        raise last_error  # type: ignore
+
+
+# Initialize the global key pool
+key_pool = GroqKeyPool(GROQ_API_KEYS)
 
 # ─── System Prompt ────────────────────────────────────────────────────────────
 
@@ -308,7 +371,7 @@ async def process_message(telegram_id: int, user_text: str) -> str:
         # Loop for handling multi-step tool calls
         while True:
             try:
-                response = await client.chat.completions.create(
+                response = await key_pool.chat_completion(
                     model=MODEL_NAME,
                     messages=history,
                     tools=tools,
