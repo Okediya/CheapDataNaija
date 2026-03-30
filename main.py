@@ -45,8 +45,10 @@ async def handle_telegram_webhook(request: web.Request) -> web.Response:
     """Process incoming Telegram updates via webhook."""
     try:
         data = await request.json()
+        logger.info(f"Telegram update received: update_id={data.get('update_id')}")
         update = Update.model_validate(data, context={"bot": bot})
         await dp.feed_update(bot, update)
+        logger.info(f"Update {data.get('update_id')} processed successfully.")
     except Exception as e:
         logger.error(f"Telegram webhook error: {e}", exc_info=True)
     return web.Response(status=200)

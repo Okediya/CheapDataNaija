@@ -3,6 +3,7 @@ CheapDataNaija Bot — Telegram Handlers
 Aiogram 3.x routers for commands, messages, and callback queries.
 """
 
+import re
 import logging
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
@@ -18,6 +19,49 @@ def is_admin(user_id: int) -> bool:
     return str(user_id).strip() == str(ADMIN_TELEGRAM_ID).strip()
 
 router = Router()
+
+
+# ─── Markdown Safety Helpers ─────────────────────────────────────────────────
+
+def _escape_markdown(text: str) -> str:
+    """Escape special Markdown characters for Telegram."""
+    # Telegram Markdown v1 special chars: _ * ` [
+    escape_chars = r'_*`['
+    return re.sub(r'([' + re.escape(escape_chars) + r'])', r'\\\1', text)
+
+
+async def safe_reply(message: Message, text: str, reply_markup=None):
+    """Send a reply that falls back to plain text if Markdown parsing fails."""
+    try:
+        await message.answer(text, parse_mode="Markdown", reply_markup=reply_markup)
+    except Exception as md_err:
+        logger.warning(f"Markdown send failed, retrying as plain text: {md_err}")
+        try:
+            await message.answer(text, parse_mode=None, reply_markup=reply_markup)
+        except Exception as plain_err:
+            logger.error(f"Plain text send also failed: {plain_err}")
+            await message.answer(
+                "I processed your request but couldn't format the response. "
+                "Please try again or use /menu.",
+                reply_markup=reply_markup
+            )
+
+
+async def safe_edit(callback_message: Message, text: str, reply_markup=None):
+    """Edit a message that falls back to plain text if Markdown parsing fails."""
+    try:
+        await callback_message.edit_text(text, parse_mode="Markdown", reply_markup=reply_markup)
+    except Exception as md_err:
+        logger.warning(f"Markdown edit failed, retrying as plain text: {md_err}")
+        try:
+            await callback_message.edit_text(text, parse_mode=None, reply_markup=reply_markup)
+        except Exception as plain_err:
+            logger.error(f"Plain text edit also failed: {plain_err}")
+            await callback_message.edit_text(
+                "I processed your request but couldn't format the response. "
+                "Please try again or use /menu.",
+                reply_markup=reply_markup
+            )
 
 # ─── Inline Keyboard Menu ────────────────────────────────────────────────────
 
@@ -94,28 +138,28 @@ async def cmd_menu(message: Message):
 async def cmd_balance(message: Message):
     """Quick balance check."""
     response = await process_message(message.from_user.id, "Check my wallet balance")
-    await message.answer(response, parse_mode="Markdown")
+    await safe_reply(message, response)
 
 
 @router.message(Command("prices"))
 async def cmd_prices(message: Message):
     """Show data prices."""
     response = await process_message(message.from_user.id, "Show me all data prices")
-    await message.answer(response, parse_mode="Markdown")
+    await safe_reply(message, response)
 
 
 @router.message(Command("fund"))
 async def cmd_fund(message: Message):
     """Start wallet funding."""
     response = await process_message(message.from_user.id, "I want to fund my wallet")
-    await message.answer(response, parse_mode="Markdown")
+    await safe_reply(message, response)
 
 
 @router.message(Command("orders"))
 async def cmd_orders(message: Message):
     """Show order history."""
     response = await process_message(message.from_user.id, "Show my order history")
-    await message.answer(response, parse_mode="Markdown")
+    await safe_reply(message, response)
 
 
 @router.message(Command("help"))
@@ -275,7 +319,7 @@ async def cb_select_network(callback: CallbackQuery):
         callback.from_user.id,
         f"Show me {network} data prices and let me pick a plan to buy"
     )
-    await callback.message.edit_text(response, parse_mode="Markdown")
+    await safe_edit(callback.message, response)
     await callback.answer()
 
 
@@ -283,8 +327,8 @@ async def cb_select_network(callback: CallbackQuery):
 async def cb_balance(callback: CallbackQuery):
     """Check wallet balance."""
     response = await process_message(callback.from_user.id, "Check my wallet balance")
-    await callback.message.edit_text(
-        response, parse_mode="Markdown",
+    await safe_edit(
+        callback.message, response,
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="⬅️ Back to Menu", callback_data="menu_main")]
         ])
@@ -296,7 +340,7 @@ async def cb_balance(callback: CallbackQuery):
 async def cb_fund(callback: CallbackQuery):
     """Fund wallet prompt."""
     response = await process_message(callback.from_user.id, "I want to fund my wallet")
-    await callback.message.edit_text(response, parse_mode="Markdown")
+    await safe_edit(callback.message, response)
     await callback.answer()
 
 
@@ -304,8 +348,8 @@ async def cb_fund(callback: CallbackQuery):
 async def cb_orders(callback: CallbackQuery):
     """Show order history."""
     response = await process_message(callback.from_user.id, "Show my recent orders")
-    await callback.message.edit_text(
-        response, parse_mode="Markdown",
+    await safe_edit(
+        callback.message, response,
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="⬅️ Back to Menu", callback_data="menu_main")]
         ])
@@ -317,8 +361,8 @@ async def cb_orders(callback: CallbackQuery):
 async def cb_history(callback: CallbackQuery):
     """Show wallet transaction history."""
     response = await process_message(callback.from_user.id, "Show my wallet history")
-    await callback.message.edit_text(
-        response, parse_mode="Markdown",
+    await safe_edit(
+        callback.message, response,
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="⬅️ Back to Menu", callback_data="menu_main")]
         ])
@@ -330,8 +374,8 @@ async def cb_history(callback: CallbackQuery):
 async def cb_prices(callback: CallbackQuery):
     """Show all data prices."""
     response = await process_message(callback.from_user.id, "Show me all data prices for all networks")
-    await callback.message.edit_text(
-        response, parse_mode="Markdown",
+    await safe_edit(
+        callback.message, response,
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="⬅️ Back to Menu", callback_data="menu_main")]
         ])
@@ -343,7 +387,7 @@ async def cb_prices(callback: CallbackQuery):
 
 @router.message(F.text)
 async def handle_message(message: Message):
-    """Handle all text messages — forward to Gemini AI."""
+    """Handle all text messages — forward to Groq AI."""
     user_id = message.from_user.id
     user_text = message.text.strip()
 
@@ -355,14 +399,14 @@ async def handle_message(message: Message):
     # Send typing indicator
     await message.bot.send_chat_action(message.chat.id, "typing")
 
-    # Process through Gemini
+    # Process through Groq LLM
     response = await process_message(user_id, user_text)
 
     # Send response (split if too long for Telegram's 4096 char limit)
     if len(response) <= 4096:
-        await message.answer(response, parse_mode="Markdown")
+        await safe_reply(message, response)
     else:
         # Split into chunks
         chunks = [response[i:i+4000] for i in range(0, len(response), 4000)]
         for chunk in chunks:
-            await message.answer(chunk, parse_mode="Markdown")
+            await safe_reply(message, chunk)
