@@ -143,6 +143,31 @@ async def cmd_help(message: Message):
 
 # ─── Admin Command Handlers ──────────────────────────────────────────────────
 
+@router.message(Command("syncsetup"))
+async def cmd_syncsetup(message: Message):
+    """Hidden command to instantly correct the remote database's Plan IDs."""
+    if not is_admin(message.from_user.id):
+        return
+        
+    correct_plans = [
+        ("MTN", "1GB", "1gb"), ("MTN", "2GB", "2gb"), ("MTN", "3GB", "3gb"), 
+        ("MTN", "5GB", "5gb"), ("MTN", "10GB", "10gb1m"),
+        ("AIRTEL", "1GB", "1gb1w"), ("AIRTEL", "2GB", "2gb1m"), ("AIRTEL", "3GB", "3gb1m"), ("AIRTEL", "5GB", "5gb1m"),
+        ("GLO", "1GB", "1GB"), ("GLO", "2GB", "2GB"), ("GLO", "3GB", "3GB"), ("GLO", "5GB", "5GB")
+    ]
+    
+    import aiosqlite
+    from config import DATABASE_PATH
+    db = await aiosqlite.connect(DATABASE_PATH)
+    try:
+        for net, size, pid in correct_plans:
+            await db.execute("UPDATE data_plans SET plan_id=? WHERE network=? AND size=?", (pid, net, size))
+        await db.commit()
+    finally:
+        await db.close()
+        
+    await message.answer("✅ Database synchronized! The exact SMEDATA Plan IDs have been injected into your live Render bot.", parse_mode="Markdown")
+
 @router.message(Command("myid"))
 async def cmd_myid(message: Message):
     """Temporary command to get user ID for setting up config."""
